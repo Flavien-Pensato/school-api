@@ -5,8 +5,10 @@ ENV PYTHONUNBUFFERED=1 \
     UV_COMPILE_BYTECODE=1 \
     UV_PROJECT_ENVIRONMENT=/usr/local
 
-# WeasyPrint runtime libraries (pango, cairo, gdk-pixbuf) + fonts
+# WeasyPrint runtime libraries (pango, cairo, gdk-pixbuf) + fonts,
+# curl for the container healthcheck
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
     libpango-1.0-0 \
     libpangoft2-1.0-0 \
     libgdk-pixbuf-2.0-0 \

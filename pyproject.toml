@@ -10,8 +10,11 @@ dependencies = [
     "django-cors-headers>=4.9",
     "django-environ>=0.14.0",
     "djangorestframework>=3.17.1",
+    "gunicorn>=26.0.0",
     "openpyxl>=3.1.5",
+    "psycopg[binary]>=3.3.4",
     "pyjwt[crypto]>=2.13.0",
     "requests>=2.34.2",
     "weasyprint>=69.0",
+    "whitenoise>=6.12.0",
 ]

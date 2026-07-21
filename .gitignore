@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Django
+db.sqlite3
+staticfiles/
+
+# Env
+.env
+
+# Editors
+.idea/
+.vscode/*
+!.vscode/tasks.json
+.DS_Store

@@ -1,0 +1,60 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Dev: Run Server",
+      "type": "shell",
+      "command": "uv run python manage.py runserver",
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "django",
+        "pattern": {
+          "regexp": "^\\s*File \"(.*)\", line (\\d+)",
+          "file": 1,
+          "line": 2
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "Performing system checks",
+          "endsPattern": "Quit the server with"
+        }
+      },
+      "group": {
+        "kind": "build",
+        "isDefault": false
+      },
+      "presentation": {
+        "panel": "dedicated",
+        "reveal": "always"
+      }
+    },
+    {
+      "label": "Build: Check + Migrate",
+      "type": "shell",
+      "command": "uv run python manage.py check && uv run python manage.py migrate",
+      "problemMatcher": [],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "presentation": {
+        "panel": "shared",
+        "reveal": "always"
+      }
+    },
+    {
+      "label": "Test: Run All",
+      "type": "shell",
+      "command": "uv run python manage.py test",
+      "problemMatcher": [],
+      "group": {
+        "kind": "test",
+        "isDefault": true
+      },
+      "presentation": {
+        "panel": "shared",
+        "reveal": "always"
+      }
+    }
+  ]
+}

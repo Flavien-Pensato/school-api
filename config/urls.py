@@ -16,8 +16,20 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import include, path
+from django.views.generic import RedirectView
 
 urlpatterns = [
+    # Keycloak-only SSO: send the admin login straight to the provider.
+    # query_string=True preserves ?next=/admin/..., which allauth honors.
+    path(
+        'admin/login/',
+        RedirectView.as_view(
+            url='/accounts/oidc/keycloak/login/',
+            query_string=True,
+            permanent=False,
+        ),
+    ),
     path('admin/', admin.site.urls),
+    path('accounts/', include('allauth.urls')),
     path('api/', include('core.urls')),
 ]

@@ -30,6 +30,18 @@ DEBUG = env('DEBUG')
 ALLOWED_HOSTS = env('ALLOWED_HOSTS')
 
 
+# Keycloak / OIDC
+
+KEYCLOAK_SERVER_URL = env('KEYCLOAK_SERVER_URL')
+KEYCLOAK_REALM = env('KEYCLOAK_REALM')
+KEYCLOAK_CLIENT_ID = env('KEYCLOAK_CLIENT_ID')
+KEYCLOAK_CLIENT_SECRET = env('KEYCLOAK_CLIENT_SECRET')
+
+KEYCLOAK_ISSUER = f"{KEYCLOAK_SERVER_URL.rstrip('/')}/realms/{KEYCLOAK_REALM}"
+KEYCLOAK_OIDC_CONFIG_URL = f'{KEYCLOAK_ISSUER}/.well-known/openid-configuration'
+KEYCLOAK_JWKS_URL = f'{KEYCLOAK_ISSUER}/protocol/openid-connect/certs'
+
+
 # Application definition
 
 INSTALLED_APPS = [
@@ -40,6 +52,10 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'rest_framework',
+    'allauth',
+    'allauth.account',
+    'allauth.socialaccount',
+    'allauth.socialaccount.providers.openid_connect',
     'core',
 ]
 
@@ -51,6 +67,7 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'allauth.account.middleware.AccountMiddleware',
 ]
 
 ROOT_URLCONF = 'config.urls'
@@ -83,6 +100,44 @@ DATABASES = {
 
 # Password validation
 # https://docs.djangoproject.com/en/6.0/ref/settings/#auth-password-validators
+
+AUTHENTICATION_BACKENDS = [
+    'django.contrib.auth.backends.ModelBackend',
+    'allauth.account.auth_backends.AuthenticationBackend',
+]
+
+
+# django-allauth — Keycloak SSO only
+# https://docs.allauth.org/en/latest/socialaccount/providers/openid_connect.html
+
+SOCIALACCOUNT_PROVIDERS = {
+    'openid_connect': {
+        'APPS': [
+            {
+                'provider_id': 'keycloak',
+                'name': 'Keycloak',
+                'client_id': KEYCLOAK_CLIENT_ID,
+                'secret': KEYCLOAK_CLIENT_SECRET,
+                'settings': {
+                    'server_url': KEYCLOAK_OIDC_CONFIG_URL,
+                },
+            }
+        ]
+    }
+}
+
+SOCIALACCOUNT_ADAPTER = 'core.adapters.KeycloakSocialAccountAdapter'
+SOCIALACCOUNT_ONLY = True
+SOCIALACCOUNT_LOGIN_ON_GET = True
+SOCIALACCOUNT_AUTO_SIGNUP = True
+SOCIALACCOUNT_STORE_TOKENS = False
+SOCIALACCOUNT_EMAIL_VERIFICATION = 'none'
+
+ACCOUNT_EMAIL_VERIFICATION = 'none'
+
+LOGIN_URL = '/accounts/oidc/keycloak/login/'
+LOGIN_REDIRECT_URL = '/admin/'
+
 
 AUTH_PASSWORD_VALIDATORS = [
     {
@@ -126,17 +181,11 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 REST_FRAMEWORK = {
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 20,
-    # TODO(user): choose the API's default security posture.
-    # Add the two keys below:
-    #
-    #   'DEFAULT_AUTHENTICATION_CLASSES': [...],
-    #   'DEFAULT_PERMISSION_CLASSES': [...],
-    #
-    # Options to weigh:
-    #   - Locked by default: permission 'rest_framework.permissions.IsAuthenticated'
-    #     -> every endpoint requires auth unless explicitly opened. Safer default.
-    #   - Open by default: 'rest_framework.permissions.AllowAny'
-    #     -> endpoints public unless explicitly locked. Easier early dev, riskier later.
-    # Authentication: 'rest_framework.authentication.SessionAuthentication' works
-    # out of the box (browsable API login); token/JWT can be added later.
+    'DEFAULT_AUTHENTICATION_CLASSES': [
+        'core.authentication.KeycloakJWTAuthentication',
+        'rest_framework.authentication.SessionAuthentication',
+    ],
+    'DEFAULT_PERMISSION_CLASSES': [
+        'rest_framework.permissions.IsAuthenticated',
+    ],
 }

@@ -2,6 +2,8 @@
 
 import csv
 import io
+import re
+import unicodedata
 from collections import Counter
 from datetime import date
 
@@ -9,14 +11,24 @@ from django.db import transaction
 
 from .models import Assignment, ClassPresence, Enrollment, Group, Student, Task
 
-# Accepted column headers (case-insensitive), French and English.
-# Adjust to match real school-software exports.
+# Accepted column headers, compared after normalisation (lowercase, accents
+# stripped, punctuation reduced to single spaces). School exports label the
+# student columns "Elève Nom" / "Elève Prénom".
 HEADER_ALIASES = {
-    'first_name': {'first_name', 'prénom', 'prenom'},
-    'last_name': {'last_name', 'nom'},
-    'external_id': {'external_id', 'identifiant', 'id'},
+    'first_name': {
+        'first name', 'firstname', 'prenom', 'eleve prenom', 'prenom eleve',
+        'prenom de l eleve',
+    },
+    'last_name': {
+        'last name', 'lastname', 'nom', 'eleve nom', 'nom eleve',
+        'nom de famille', 'nom de l eleve',
+    },
+    'external_id': {'external id', 'externalid', 'identifiant', 'id', 'ine'},
 }
 REQUIRED_FIELDS = ('first_name', 'last_name')
+# Exports often carry a title banner ("MFR CHATTE", "ANNEE 2026/2027") above
+# the real header row, so the header is searched for instead of assumed first.
+HEADER_SEARCH_ROWS = 20
 
 
 class ImportError_(Exception):
@@ -28,27 +40,43 @@ class ImportError_(Exception):
         super().__init__(str(errors))
 
 
+def _normalize(raw):
+    """Lowercase, strip accents, collapse punctuation to single spaces."""
+    text = unicodedata.normalize('NFKD', '' if raw is None else str(raw))
+    text = ''.join(char for char in text if not unicodedata.combining(char))
+    return ' '.join(part for part in re.split(r'[^a-z0-9]+', text.lower()) if part)
+
+
 def _map_headers(raw_headers):
-    """Map file headers to model fields. Returns {field: column_index}."""
+    """Map one row's cells to model fields. Returns {field: column_index}."""
     mapping = {}
     for index, raw in enumerate(raw_headers):
-        name = (raw or '').strip().lower()
+        name = _normalize(raw)
+        if not name:
+            continue
         for field, aliases in HEADER_ALIASES.items():
             if name in aliases and field not in mapping:
                 mapping[field] = index
-    missing = [f for f in REQUIRED_FIELDS if f not in mapping]
-    if missing:
-        raise ImportError_([{
-            'errors': [
-                f'Missing required column(s): {", ".join(missing)}. '
-                f'Accepted headers: '
-                + '; '.join(
-                    f'{field}: {sorted(aliases)}'
-                    for field, aliases in HEADER_ALIASES.items()
-                )
-            ]
-        }])
     return mapping
+
+
+def _find_header_row(rows):
+    """Find the header among the first rows. Returns (position, mapping)."""
+    for position, (_, row) in enumerate(rows[:HEADER_SEARCH_ROWS]):
+        mapping = _map_headers(row)
+        if all(field in mapping for field in REQUIRED_FIELDS):
+            return position, mapping
+    raise ImportError_([{
+        'errors': [
+            'No header row found in the first '
+            f'{HEADER_SEARCH_ROWS} non-empty rows. Required column(s): '
+            f'{", ".join(REQUIRED_FIELDS)}. Accepted headers: '
+            + '; '.join(
+                f'{field}: {sorted(aliases)}'
+                for field, aliases in HEADER_ALIASES.items()
+            )
+        ]
+    }])
 
 
 def _rows_from_csv(file):
@@ -74,23 +102,28 @@ def _rows_from_xlsx(file):
 
 
 def parse_student_file(file, filename):
-    """Returns list of {'first_name', 'last_name', 'external_id'} dicts.
+    """Returns list of {'first_name', 'last_name', 'external_id', 'row'} dicts.
     Raises ImportError_ with row-level errors — nothing is written."""
     lowered = filename.lower()
     if lowered.endswith('.csv'):
-        rows = _rows_from_csv(file)
+        raw_rows = _rows_from_csv(file)
     elif lowered.endswith('.xlsx'):
-        rows = _rows_from_xlsx(file)
+        raw_rows = _rows_from_xlsx(file)
     else:
         raise ImportError_([{'errors': ['Unsupported file type; use .csv or .xlsx.']}])
 
-    rows = [row for row in rows if any((cell or '').strip() for cell in row)]
+    # Keep the real file line number so reported errors point at the right row.
+    rows = [
+        (line_number, row)
+        for line_number, row in enumerate(raw_rows, start=1)
+        if any((cell or '').strip() for cell in row)
+    ]
     if not rows:
         raise ImportError_([{'errors': ['File is empty.']}])
 
-    mapping = _map_headers(rows[0])
+    header_position, mapping = _find_header_row(rows)
     students, errors = [], []
-    for line_number, row in enumerate(rows[1:], start=2):
+    for line_number, row in rows[header_position + 1:]:
         def cell(field):
             index = mapping.get(field)
             if index is None or index >= len(row):
@@ -98,6 +131,7 @@ def parse_student_file(file, filename):
             return (row[index] or '').strip()
 
         record = {field: cell(field) for field in HEADER_ALIASES}
+        record['row'] = line_number
         row_errors = [
             f'{field} missing' for field in REQUIRED_FIELDS if not record[field]
         ]
@@ -129,7 +163,8 @@ def import_students(school_class, records):
     }
     errors = []
 
-    for line_number, record in enumerate(records, start=2):
+    for index, record in enumerate(records, start=2):
+        line_number = record.get('row', index)
         student = None
         if record['external_id']:
             student = Student.objects.filter(

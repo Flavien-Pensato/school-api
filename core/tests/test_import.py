@@ -148,3 +148,30 @@ class StudentImportTests(APITestCase):
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.data['reused_students'], 1)
         self.assertEqual(Student.objects.count(), 1)
+
+    def test_xlsx_with_title_banner_and_eleve_headers(self):
+        """Real school export: title rows above an "Elève Nom" header."""
+        response = self.import_(xlsx_file([
+            ['MFR CHATTE', 'LISTE DES ELEVES 3°B'],
+            ['ANNEE 2026/2027'],
+            [],
+            [],
+            ['Elève Nom', 'Elève Prénom'],
+            ['BEGUIN', 'Ylann'],
+            ['BLACHIER', 'Cynthia'],
+        ]))
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data['created_students'], 2)
+        student = Student.objects.get(last_name='BEGUIN')
+        self.assertEqual(student.first_name, 'Ylann')
+
+    def test_row_numbers_account_for_banner_rows(self):
+        response = self.import_(xlsx_file([
+            ['MFR CHATTE'],
+            ['Elève Nom', 'Elève Prénom'],
+            ['BEGUIN', 'Ylann'],
+            ['BLACHIER', ''],  # missing first_name → file line 4
+        ]))
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data['errors'][0]['row'], 4)
+        self.assertEqual(Student.objects.count(), 0)

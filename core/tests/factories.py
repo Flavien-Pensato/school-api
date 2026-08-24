@@ -44,8 +44,11 @@ def make_class(year, name='4A'):
     return SchoolClass.objects.create(school_year=year, name=name)
 
 
-def make_group(school_class, name='Groupe 1'):
-    return Group.objects.create(school_class=school_class, name=name)
+def make_group(school_class, name=None):
+    # Default name goes through the model so it stays unique within the year.
+    return Group.objects.create(
+        school_class=school_class, name=name or school_class.group_name(1)
+    )
 
 
 def make_student(school, first_name='Jean', last_name='Dupont', **kwargs):

@@ -82,12 +82,18 @@ class AdminGenerateActionsTests(TestCase):
         self.assertEqual(second.groups.count(), 10)
         self.assertEqual(
             list(first.groups.values_list('name', flat=True))[:2],
-            ['Groupe 1', 'Groupe 10'],  # alphabetical ordering on the model
+            # class-prefixed so the name is unique for the whole year
+            ['3ème A - Groupe 1', '3ème A - Groupe 10'],
+        )
+        self.assertFalse(
+            second.groups.filter(name__startswith='3ème A').exists()
         )
 
     def test_generate_groups_only_fills_the_gaps(self):
         school_class = make_class(self.year, '3ème A')
-        kept = Group.objects.create(school_class=school_class, name='Groupe 3')
+        kept = Group.objects.create(
+            school_class=school_class, name=school_class.group_name(3)
+        )
         self.post('admin:core_schoolclass_changelist', [school_class],
                   'generate_groups', {'confirmed': '1', 'count': '10'})
         self.assertEqual(school_class.groups.count(), 10)

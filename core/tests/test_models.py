@@ -4,7 +4,7 @@ from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 from django.test import TestCase
 
-from core.models import Assignment, Enrollment, Student, Week
+from core.models import Assignment, Enrollment, Group, Student, Week
 
 from .factories import (
     make_class,
@@ -176,3 +176,42 @@ class ScopedQuerySetTests(TestCase):
         self.assertEqual(
             list(Group.objects.for_user(self.user_a)), [group_a]
         )
+
+
+class GroupNamingTests(TestCase):
+    """Group names must be unique for the whole year, not just the class."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.school = make_school('MFR Chatte')
+        cls.year = make_year(cls.school, with_weeks=False)
+        cls.cls_a = make_class(cls.year, '3ème A')
+        cls.cls_b = make_class(cls.year, '3ème B')
+
+    def test_generated_names_carry_the_class(self):
+        groups, created = self.cls_a.generate_groups(2)
+        self.assertEqual(created, 2)
+        self.assertEqual(
+            [group.name for group in groups],
+            ['3ème A - Groupe 1', '3ème A - Groupe 2'],
+        )
+
+    def test_same_name_twice_in_a_year_is_rejected(self):
+        Group.objects.create(school_class=self.cls_a, name='Les rouges')
+        with self.assertRaises(IntegrityError):
+            Group.objects.create(school_class=self.cls_b, name='Les rouges')
+
+    def test_same_name_in_another_year_is_allowed(self):
+        next_year = make_year(
+            self.school, name='2027-2028',
+            start=date(2027, 9, 6), end=date(2028, 6, 30), with_weeks=False,
+        )
+        Group.objects.create(school_class=self.cls_a, name='Les rouges')
+        other = Group.objects.create(
+            school_class=make_class(next_year, '3ème A'), name='Les rouges',
+        )
+        self.assertEqual(other.school_year, next_year)
+
+    def test_school_year_is_derived_from_the_class(self):
+        group = Group.objects.create(school_class=self.cls_a, name='Les bleus')
+        self.assertEqual(group.school_year, self.year)

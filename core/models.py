@@ -225,13 +225,17 @@ class SchoolClass(models.Model):
     def school(self):
         return self.school_year.school
 
+    def group_name(self, number):
+        """Group names carry the class so they stay unique within the year."""
+        return f'{self.name} - Groupe {number}'
+
     def generate_groups(self, count=DEFAULT_GROUP_COUNT):
         """Create `count` numbered groups for this class. Idempotent —
         re-running only fills the gaps. Returns (groups, created)."""
         groups, created = [], 0
         for number in range(1, count + 1):
             group, was_created = Group.objects.get_or_create(
-                school_class=self, name=f'Groupe {number}'
+                school_class=self, name=self.group_name(number)
             )
             groups.append(group)
             created += was_created
@@ -239,10 +243,22 @@ class SchoolClass(models.Model):
 
 
 class Group(models.Model):
+    """A work group inside a class. Names are unique for the whole school
+    year, not just the class, so a group reads unambiguously wherever it
+    appears (dashboards, PDFs, assignment lists) without its class beside it.
+
+    `school_year` is denormalised from `school_class` — a UniqueConstraint
+    cannot span a relation — and kept in sync by save().
+    """
+
     school_class = models.ForeignKey(
         SchoolClass, on_delete=models.CASCADE, related_name='groups'
     )
-    name = models.CharField(max_length=100)
+    school_year = models.ForeignKey(
+        SchoolYear, on_delete=models.CASCADE, related_name='groups',
+        editable=False,
+    )
+    name = models.CharField(max_length=150)
 
     objects = school_scoped_manager('school_class__school_year__school')
 
@@ -250,12 +266,16 @@ class Group(models.Model):
         ordering = ['name']
         constraints = [
             models.UniqueConstraint(
-                fields=['school_class', 'name'], name='unique_group_per_class'
+                fields=['school_year', 'name'], name='unique_group_per_year'
             )
         ]
 
     def __str__(self):
         return f'{self.name} — {self.school_class}'
+
+    def save(self, *args, **kwargs):
+        self.school_year = self.school_class.school_year
+        super().save(*args, **kwargs)
 
     @property
     def school(self):

@@ -1,0 +1,26 @@
+{% extends "admin/base_site.html" %}
+{% load i18n admin_urls %}
+
+{% block content %}
+<h1>{{ title }}</h1>
+<p>{{ description }}</p>
+
+<form method="post">{% csrf_token %}
+  {% for obj in queryset %}
+    <input type="hidden" name="{{ action_checkbox_name }}" value="{{ obj.pk }}">
+  {% endfor %}
+  <input type="hidden" name="action" value="{{ action_name }}">
+  <input type="hidden" name="confirmed" value="1">
+
+  <ul>
+    {% for obj in queryset %}<li>{{ obj }}</li>{% endfor %}
+  </ul>
+
+  {{ form.as_p }}
+
+  <div class="submit-row">
+    <input type="submit" class="default" value="{{ submit_label }}">
+    <a class="button cancel-link" href="{% url opts|admin_urlname:'changelist' %}">{% translate "Cancel" %}</a>
+  </div>
+</form>
+{% endblock %}

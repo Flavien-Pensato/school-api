@@ -1,6 +1,10 @@
+from django import forms
 from django.contrib import admin
+from django.shortcuts import render
 
 from .models import (
+    DEFAULT_CLASS_NAMES,
+    DEFAULT_GROUP_COUNT,
     Assignment,
     ClassPresence,
     Enrollment,
@@ -13,6 +17,59 @@ from .models import (
     Task,
     Week,
 )
+
+class ClassNamesForm(forms.Form):
+    """One class name per line; blank lines ignored."""
+
+    names = forms.CharField(
+        label='Classes (une par ligne)',
+        widget=forms.Textarea(attrs={'rows': 15, 'cols': 40}),
+        initial='\n'.join(DEFAULT_CLASS_NAMES),
+    )
+
+    def clean_names(self):
+        names, seen = [], set()
+        for line in self.cleaned_data['names'].splitlines():
+            name = line.strip()
+            if name and name not in seen:
+                seen.add(name)
+                names.append(name)
+        if not names:
+            raise forms.ValidationError('Au moins une classe est requise.')
+        return names
+
+
+class GroupCountForm(forms.Form):
+    count = forms.IntegerField(
+        label='Nombre de groupes par classe',
+        min_value=1,
+        max_value=50,
+        initial=DEFAULT_GROUP_COUNT,
+    )
+
+
+def _confirm(modeladmin, request, queryset, form_class, action_name, **context):
+    """Render (or process) the intermediate confirmation page of an action.
+
+    Returns the bound form once the superuser confirms, else the response to
+    return from the action.
+    """
+    if request.POST.get('confirmed'):
+        form = form_class(request.POST)
+        if form.is_valid():
+            return form
+    else:
+        form = form_class()
+    return render(request, 'admin/core/generate_form.html', {
+        **modeladmin.admin_site.each_context(request),
+        'opts': modeladmin.model._meta,
+        'queryset': queryset,
+        'form': form,
+        'action_name': action_name,
+        'action_checkbox_name': admin.helpers.ACTION_CHECKBOX_NAME,
+        **context,
+    })
+
 
 # Admin is superuser territory (Keycloak realm role django-superuser); no
 # per-school scoping here for v1 — staff use the API. If is_staff users ever
@@ -36,6 +93,32 @@ class SchoolAdmin(admin.ModelAdmin):
 class SchoolYearAdmin(admin.ModelAdmin):
     list_display = ['name', 'school', 'start_date', 'end_date']
     list_filter = ['school']
+    actions = ['generate_classes']
+
+    @admin.action(description='Générer les classes de l\'année')
+    def generate_classes(self, request, queryset):
+        result = _confirm(
+            self, request, queryset, ClassNamesForm, 'generate_classes',
+            title='Générer les classes',
+            description=(
+                'Une classe par ligne. Les classes déjà existantes sont '
+                'conservées telles quelles.'
+            ),
+            submit_label='Générer les classes',
+        )
+        if not isinstance(result, ClassNamesForm):
+            return result
+
+        names = result.cleaned_data['names']
+        created = 0
+        for year in queryset:
+            _, year_created = year.generate_classes(names)
+            created += year_created
+        self.message_user(
+            request,
+            f'{created} classe(s) créée(s) sur {queryset.count()} année(s) ; '
+            f'{len(names) * queryset.count() - created} déjà existante(s).',
+        )
 
 
 @admin.register(Week)
@@ -54,9 +137,39 @@ class StudentAdmin(admin.ModelAdmin):
 
 @admin.register(SchoolClass)
 class SchoolClassAdmin(admin.ModelAdmin):
-    list_display = ['name', 'school_year']
+    list_display = ['name', 'school_year', 'group_count']
     list_filter = ['school_year']
     search_fields = ['name']
+    actions = ['generate_groups']
+
+    @admin.display(description='groupes')
+    def group_count(self, obj):
+        return obj.groups.count()
+
+    @admin.action(description='Générer les groupes')
+    def generate_groups(self, request, queryset):
+        result = _confirm(
+            self, request, queryset, GroupCountForm, 'generate_groups',
+            title='Générer les groupes',
+            description=(
+                'Crée les groupes « Groupe 1 » … « Groupe N » pour chaque '
+                'classe sélectionnée. Les groupes existants sont conservés.'
+            ),
+            submit_label='Générer les groupes',
+        )
+        if not isinstance(result, GroupCountForm):
+            return result
+
+        count = result.cleaned_data['count']
+        created = 0
+        for school_class in queryset:
+            _, class_created = school_class.generate_groups(count)
+            created += class_created
+        self.message_user(
+            request,
+            f'{created} groupe(s) créé(s) sur {queryset.count()} classe(s) ; '
+            f'{count * queryset.count() - created} déjà existant(s).',
+        )
 
 
 @admin.register(Group)

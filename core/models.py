@@ -4,6 +4,26 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
 
+# Back-office defaults: how many groups a class is split into, and the class
+# list MFR Chatte runs each year. Both are only starting points — the admin
+# "générer" actions let a superuser edit them before creating anything.
+DEFAULT_GROUP_COUNT = 10
+DEFAULT_CLASS_NAMES = [
+    'Seconde',
+    'Première',
+    'Terminale',
+    '4ème A',
+    '4ème B',
+    '3ème A',
+    '3ème B',
+    'CAP 1 CHARP BOIS + IS',
+    'CAP 2 CHARP BOIS + IS',
+    'CAP 1 MACON + IMTB',
+    'CAP 2 MACON + IMTB',
+    'BTS 1',
+    'BTS 2',
+]
+
 
 class SchoolScopedQuerySet(models.QuerySet):
     """QuerySet filterable to the schools a user belongs to.
@@ -97,6 +117,18 @@ class SchoolYear(models.Model):
     def clean(self):
         if self.start_date and self.end_date and self.start_date >= self.end_date:
             raise ValidationError('start_date must be before end_date.')
+
+    def generate_classes(self, names):
+        """Create one SchoolClass per name for this year. Idempotent —
+        an existing class keeps its enrollments. Returns (classes, created)."""
+        classes, created = [], 0
+        for name in names:
+            school_class, was_created = SchoolClass.objects.get_or_create(
+                school_year=self, name=name
+            )
+            classes.append(school_class)
+            created += was_created
+        return classes, created
 
     def generate_weeks(self):
         """Create one Week per ISO week (anchored on Monday) covering the
@@ -192,6 +224,18 @@ class SchoolClass(models.Model):
     @property
     def school(self):
         return self.school_year.school
+
+    def generate_groups(self, count=DEFAULT_GROUP_COUNT):
+        """Create `count` numbered groups for this class. Idempotent —
+        re-running only fills the gaps. Returns (groups, created)."""
+        groups, created = [], 0
+        for number in range(1, count + 1):
+            group, was_created = Group.objects.get_or_create(
+                school_class=self, name=f'Groupe {number}'
+            )
+            groups.append(group)
+            created += was_created
+        return groups, created
 
 
 class Group(models.Model):

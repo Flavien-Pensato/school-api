@@ -21,6 +21,7 @@ env = environ.Env(
     DEBUG=(bool, False),
     ALLOWED_HOSTS=(list, []),
     CORS_ALLOWED_ORIGINS=(list, []),
+    CORS_ALLOWED_ORIGIN_REGEXES=(list, []),
     CSRF_TRUSTED_ORIGINS=(list, []),
 )
 environ.Env.read_env(BASE_DIR / '.env')
@@ -33,6 +34,9 @@ ALLOWED_HOSTS = env('ALLOWED_HOSTS')
 
 # Browser frontend origins allowed to call the API (Bearer auth, no cookies)
 CORS_ALLOWED_ORIGINS = env('CORS_ALLOWED_ORIGINS')
+
+# Same, as anchored regexes — lets one entry cover every subdomain of a site
+CORS_ALLOWED_ORIGIN_REGEXES = env('CORS_ALLOWED_ORIGIN_REGEXES')
 
 # Origins trusted for CSRF-protected requests (admin/session flows behind HTTPS)
 CSRF_TRUSTED_ORIGINS = env('CSRF_TRUSTED_ORIGINS')

@@ -197,8 +197,10 @@ class SchoolClassAdmin(admin.ModelAdmin):
             self, request, queryset, GroupCountForm, 'generate_groups',
             title='Générer les groupes',
             description=(
-                'Crée les groupes « Groupe 1 » … « Groupe N » pour chaque '
-                'classe sélectionnée. Les groupes existants sont conservés.'
+                'Crée N groupes numérotés pour chaque classe sélectionnée. '
+                'La numérotation se poursuit d’une classe à l’autre sur '
+                'l’année : « 1 » … « 10 » pour la première, « 11 » … « 20 » '
+                'pour la suivante. Les groupes existants sont conservés.'
             ),
             submit_label='Générer les groupes',
         )

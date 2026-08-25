@@ -188,13 +188,29 @@ class GroupNamingTests(TestCase):
         cls.cls_a = make_class(cls.year, '3ème A')
         cls.cls_b = make_class(cls.year, '3ème B')
 
-    def test_generated_names_carry_the_class(self):
+    def test_generated_names_are_numbers(self):
         groups, created = self.cls_a.generate_groups(2)
         self.assertEqual(created, 2)
-        self.assertEqual(
-            [group.name for group in groups],
-            ['3ème A - Groupe 1', '3ème A - Groupe 2'],
-        )
+        self.assertEqual([group.name for group in groups], ['1', '2'])
+
+    def test_numbering_continues_on_the_next_class(self):
+        self.cls_a.generate_groups(2)
+        groups, _ = self.cls_b.generate_groups(2)
+        self.assertEqual([group.name for group in groups], ['3', '4'])
+
+    def test_regenerating_keeps_the_class_block(self):
+        self.cls_a.generate_groups(2)
+        self.cls_b.generate_groups(2)
+        groups, created = self.cls_a.generate_groups(2)
+        self.assertEqual(created, 0)
+        self.assertEqual([group.name for group in groups], ['1', '2'])
+
+    def test_growing_a_block_skips_a_sibling_class_numbers(self):
+        self.cls_a.generate_groups(2)
+        self.cls_b.generate_groups(2)
+        groups, created = self.cls_a.generate_groups(3)
+        self.assertEqual(created, 1)
+        self.assertEqual([group.name for group in groups], ['1', '2', '5'])
 
     def test_same_name_twice_in_a_year_is_rejected(self):
         Group.objects.create(school_class=self.cls_a, name='Les rouges')

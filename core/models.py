@@ -3,6 +3,7 @@ from datetime import timedelta
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
+from django.db.models.functions import Length
 
 # Back-office defaults: how many groups a class is split into, and the class
 # list MFR Chatte runs each year. Both are only starting points — the admin
@@ -254,26 +255,56 @@ class SchoolClass(models.Model):
         return self.school_year.school
 
     def group_name(self, number):
-        """Group names carry the class so they stay unique within the year."""
-        return f'{self.name} - Groupe {number}'
+        """A group is named by its number alone: numbers run across the whole
+        year, so no class prefix is needed to keep them unique."""
+        return str(number)
+
+    def group_numbers(self):
+        """Numbers this class already holds; hand-typed non-numeric group
+        names are ignored."""
+        return {
+            int(name)
+            for name in self.groups.values_list('name', flat=True)
+            if name.isdigit()
+        }
 
     def generate_groups(self, count=DEFAULT_GROUP_COUNT):
-        """Create `count` numbered groups for this class. Idempotent —
-        re-running only fills the gaps. Returns (groups, created)."""
+        """Create `count` numbered groups for this class, taking the next free
+        block of numbers in the school year: the first class generated gets
+        1…10, the next 11…20, and so on.
+
+        Idempotent — a class that already holds numbers keeps its block, so
+        re-running only fills the gaps, and numbers held by a sibling class
+        are skipped rather than stolen. Returns (groups, created).
+        """
+        year_numbers = {
+            int(name)
+            for name in Group.objects.filter(
+                school_year=self.school_year
+            ).values_list('name', flat=True)
+            if name.isdigit()
+        }
+        own = self.group_numbers()
+        others = year_numbers - own
+        number = min(own) if own else max(year_numbers, default=0) + 1
+
         groups, created = [], 0
-        for number in range(1, count + 1):
-            group, was_created = Group.objects.get_or_create(
-                school_class=self, name=self.group_name(number)
-            )
-            groups.append(group)
-            created += was_created
+        while len(groups) < count:
+            if number not in others:
+                group, was_created = Group.objects.get_or_create(
+                    school_class=self, name=self.group_name(number)
+                )
+                groups.append(group)
+                created += was_created
+            number += 1
         return groups, created
 
 
 class Group(models.Model):
-    """A work group inside a class. Names are unique for the whole school
-    year, not just the class, so a group reads unambiguously wherever it
-    appears (dashboards, PDFs, assignment lists) without its class beside it.
+    """A work group inside a class, named by a number that is unique for the
+    whole school year, not just the class — so "7" reads unambiguously
+    wherever it appears (dashboards, PDFs, assignment lists) without its
+    class beside it.
 
     `school_year` is denormalised from `school_class` — a UniqueConstraint
     cannot span a relation — and kept in sync by save().
@@ -291,7 +322,8 @@ class Group(models.Model):
     objects = school_scoped_manager('school_class__school_year__school')
 
     class Meta:
-        ordering = ['name']
+        # Shortest name first so numbers sort 1, 2, … 10 rather than 1, 10, 2.
+        ordering = [Length('name'), 'name']
         constraints = [
             models.UniqueConstraint(
                 fields=['school_year', 'name'], name='unique_group_per_year'

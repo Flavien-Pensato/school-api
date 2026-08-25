@@ -121,13 +121,14 @@ class AdminGenerateActionsTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(first.groups.count(), 10)
         self.assertEqual(second.groups.count(), 10)
+        # numbering runs across the year: 1…10, then 11…20
         self.assertEqual(
-            list(first.groups.values_list('name', flat=True))[:2],
-            # class-prefixed so the name is unique for the whole year
-            ['3ème A - Groupe 1', '3ème A - Groupe 10'],
+            list(first.groups.values_list('name', flat=True)),
+            [str(number) for number in range(1, 11)],
         )
-        self.assertFalse(
-            second.groups.filter(name__startswith='3ème A').exists()
+        self.assertEqual(
+            list(second.groups.values_list('name', flat=True)),
+            [str(number) for number in range(11, 21)],
         )
 
     def test_generate_groups_only_fills_the_gaps(self):

@@ -5,6 +5,7 @@ from django.shortcuts import render
 from .models import (
     DEFAULT_CLASS_NAMES,
     DEFAULT_GROUP_COUNT,
+    DEFAULT_TASK_NAMES,
     Assignment,
     ClassPresence,
     Enrollment,
@@ -18,14 +19,12 @@ from .models import (
     Week,
 )
 
-class ClassNamesForm(forms.Form):
-    """One class name per line; blank lines ignored."""
+class NamesForm(forms.Form):
+    """One name per line; blank lines and duplicates ignored."""
 
-    names = forms.CharField(
-        label='Classes (une par ligne)',
-        widget=forms.Textarea(attrs={'rows': 15, 'cols': 40}),
-        initial='\n'.join(DEFAULT_CLASS_NAMES),
-    )
+    empty_error = 'Au moins un nom est requis.'
+
+    names = forms.CharField(widget=forms.Textarea(attrs={'rows': 15, 'cols': 40}))
 
     def clean_names(self):
         names, seen = [], set()
@@ -35,8 +34,28 @@ class ClassNamesForm(forms.Form):
                 seen.add(name)
                 names.append(name)
         if not names:
-            raise forms.ValidationError('Au moins une classe est requise.')
+            raise forms.ValidationError(self.empty_error)
         return names
+
+
+class ClassNamesForm(NamesForm):
+    empty_error = 'Au moins une classe est requise.'
+
+    names = forms.CharField(
+        label='Classes (une par ligne)',
+        widget=forms.Textarea(attrs={'rows': 15, 'cols': 40}),
+        initial='\n'.join(DEFAULT_CLASS_NAMES),
+    )
+
+
+class TaskNamesForm(NamesForm):
+    empty_error = 'Au moins une tâche est requise.'
+
+    names = forms.CharField(
+        label='Tâches (une par ligne)',
+        widget=forms.Textarea(attrs={'rows': 15, 'cols': 40}),
+        initial='\n'.join(DEFAULT_TASK_NAMES),
+    )
 
 
 class GroupCountForm(forms.Form):
@@ -87,6 +106,32 @@ class SchoolAdmin(admin.ModelAdmin):
     list_display = ['name']
     search_fields = ['name']
     inlines = [SchoolMembershipInline]
+    actions = ['generate_tasks']
+
+    @admin.action(description='Générer les tâches par défaut')
+    def generate_tasks(self, request, queryset):
+        result = _confirm(
+            self, request, queryset, TaskNamesForm, 'generate_tasks',
+            title='Générer les tâches',
+            description=(
+                'Une tâche par ligne, dans l\'ordre de rotation. Les tâches '
+                'déjà existantes sont conservées telles quelles.'
+            ),
+            submit_label='Générer les tâches',
+        )
+        if not isinstance(result, TaskNamesForm):
+            return result
+
+        names = result.cleaned_data['names']
+        created = 0
+        for school in queryset:
+            _, school_created = school.generate_tasks(names)
+            created += school_created
+        self.message_user(
+            request,
+            f'{created} tâche(s) créée(s) sur {queryset.count()} école(s) ; '
+            f'{len(names) * queryset.count() - created} déjà existante(s).',
+        )
 
 
 @admin.register(SchoolYear)

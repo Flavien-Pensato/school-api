@@ -23,6 +23,20 @@ DEFAULT_CLASS_NAMES = [
     'BTS 1',
     'BTS 2',
 ]
+DEFAULT_TASK_NAMES = [
+    'Vaisselle matin/soir',
+    'Exterieur',
+    'Salle B / Salle verte',
+    'Foyer',
+    'Ancien dortoir',
+    'Salle Jobin',
+    'Vaisselle midi',
+    'Nouveau dortoir',
+    'Refectoir midi',
+    'Machine à boisson',
+    'Véhicules',
+    'Refectoir matin/soir',
+]
 
 
 class SchoolScopedQuerySet(models.QuerySet):
@@ -64,6 +78,20 @@ class School(models.Model):
     def school(self):
         # Uniform access to the owning school across all scoped models.
         return self
+
+    def generate_tasks(self, names):
+        """Create one Task per name for this school. Idempotent — an existing
+        task keeps its assignments and its is_active flag. Creation order sets
+        the rotation order (Task.Meta.ordering = ['id']).
+        Returns (tasks, created)."""
+        tasks, created = [], 0
+        for name in names:
+            task, was_created = Task.objects.get_or_create(
+                school=self, name=name
+            )
+            tasks.append(task)
+            created += was_created
+        return tasks, created
 
 
 class SchoolMembership(models.Model):

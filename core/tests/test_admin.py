@@ -1,13 +1,20 @@
-"""Back-office actions: generate a year's classes, generate a class's groups."""
+"""Back-office actions: generate a school's tasks, a year's classes,
+and a class's groups."""
 
 from django.contrib.admin.helpers import ACTION_CHECKBOX_NAME
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
-from core.models import DEFAULT_CLASS_NAMES, Group, SchoolClass
+from core.models import (
+    DEFAULT_CLASS_NAMES,
+    DEFAULT_TASK_NAMES,
+    Group,
+    SchoolClass,
+    Task,
+)
 
-from .factories import make_class, make_school, make_year
+from .factories import make_class, make_school, make_task, make_year
 
 User = get_user_model()
 
@@ -36,6 +43,40 @@ class AdminGenerateActionsTests(TestCase):
             ACTION_CHECKBOX_NAME: [obj.pk for obj in objects],
             **(data or {}),
         }, follow=True)
+
+    # --- tasks -------------------------------------------------------------
+
+    def test_generate_tasks_shows_prefilled_form_first(self):
+        response = self.post(
+            'admin:core_school_changelist', [self.school], 'generate_tasks'
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Générer les tâches')
+        self.assertContains(response, DEFAULT_TASK_NAMES[0])
+        self.assertEqual(Task.objects.count(), 0)  # nothing written yet
+
+    def test_generate_tasks_creates_the_edited_list_in_order(self):
+        response = self.post(
+            'admin:core_school_changelist', [self.school], 'generate_tasks',
+            {'confirmed': '1', 'names': 'Vaisselle midi\nFoyer\n\n  Véhicules  \n'},
+        )
+        self.assertEqual(response.status_code, 200)
+        # Task.Meta.ordering is ['id'], so this is the rotation order too.
+        self.assertEqual(
+            list(self.school.tasks.values_list('name', flat=True)),
+            ['Vaisselle midi', 'Foyer', 'Véhicules'],
+        )
+
+    def test_generate_tasks_reuses_existing_ones(self):
+        existing = make_task(self.school, 'Foyer', is_active=False)
+        data = {'confirmed': '1', 'names': 'Foyer\nVéhicules'}
+        self.post('admin:core_school_changelist', [self.school],
+                  'generate_tasks', data)
+        self.post('admin:core_school_changelist', [self.school],
+                  'generate_tasks', data)
+        self.assertEqual(self.school.tasks.count(), 2)
+        # an existing task keeps its flag — regeneration must not re-activate it
+        self.assertFalse(Task.objects.get(pk=existing.pk).is_active)
 
     # --- classes -----------------------------------------------------------
 

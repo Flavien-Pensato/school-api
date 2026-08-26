@@ -136,9 +136,27 @@ class SchoolAdmin(admin.ModelAdmin):
 
 @admin.register(SchoolYear)
 class SchoolYearAdmin(admin.ModelAdmin):
-    list_display = ['name', 'school', 'start_date', 'end_date']
+    list_display = ['name', 'school', 'start_date', 'end_date', 'week_count']
     list_filter = ['school']
-    actions = ['generate_classes']
+    actions = ['generate_classes', 'generate_weeks']
+
+    @admin.display(description='semaines')
+    def week_count(self, obj):
+        return obj.weeks.count()
+
+    @admin.action(description='Générer les semaines de l\'année')
+    def generate_weeks(self, request, queryset):
+        """Years created through the API get their weeks from
+        SchoolYearSerializer.create; years created here need this action —
+        without weeks the presence grid has no columns."""
+        created = 0
+        for year in queryset:
+            before = year.weeks.count()
+            created += len(year.generate_weeks()) - before
+        self.message_user(
+            request,
+            f'{created} semaine(s) créée(s) sur {queryset.count()} année(s).',
+        )
 
     @admin.action(description='Générer les classes de l\'année')
     def generate_classes(self, request, queryset):

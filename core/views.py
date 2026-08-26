@@ -81,6 +81,12 @@ class SchoolYearViewSet(SchoolScopedViewSetMixin, viewsets.ModelViewSet):
     def stats(self, request, pk=None):
         return Response(services.build_year_stats(self.get_object()))
 
+    @action(detail=True, methods=['get'], url_path='presence-grid')
+    def presence_grid(self, request, pk=None):
+        return Response(
+            services.build_year_presence_grid(self.get_object())
+        )
+
 
 class WeekViewSet(SchoolScopedViewSetMixin, viewsets.ReadOnlyModelViewSet):
     queryset = Week.objects.all()
@@ -236,3 +242,6 @@ class ClassPresenceViewSet(SchoolScopedViewSetMixin, viewsets.ModelViewSet):
             week='week_id',
             school_year='week__school_year_id',
         )
+
+    def perform_destroy(self, instance):
+        services.revoke_class_presence(instance)

@@ -448,3 +448,67 @@ def build_year_stats(school_year):
         'school_year': {'id': school_year.pk, 'name': school_year.name},
         'groups': list(group_rows.values()),
     }
+
+
+def revoke_class_presence(presence):
+    """Un-check one cell of the presence grid: the class is no longer on-site
+    that week, so its groups have no work that week either.
+
+    Deleting the ClassPresence row alone is not enough. Assignment rows for
+    that class's groups survive, and nothing else clears them:
+    generate_week_assignments only deletes is_manual=False rows, and only for
+    classes it still considers present. Such orphans stay invisible in
+    build_week_dashboard (it iterates week.presences) while build_year_stats
+    keeps counting them into `total`, pushing `weeks_rested` negative.
+
+    Manual assignments go too — an absent class cannot work, whoever typed
+    the override. Re-checking the box leaves the week un-assigned; run the
+    rotation again to refill it.
+    """
+    with transaction.atomic():
+        removed, _ = Assignment.objects.filter(
+            week=presence.week,
+            group__school_class=presence.school_class,
+        ).delete()
+        presence.delete()
+    return removed
+
+
+def build_year_presence_grid(school_year):
+    """Presence table for a whole school year: one row per class, one column
+    per week, for the UI to render checkboxes.
+
+    Each cell is the ClassPresence pk (the class is present that week) or
+    None (absent) — the pk is what the client needs to DELETE the row when
+    the box is un-checked. `cells` is positional: index i is `weeks[i]`.
+    """
+    weeks = list(school_year.weeks.order_by('start_date'))
+    column_of = {week.pk: index for index, week in enumerate(weeks)}
+    presences = ClassPresence.objects.filter(
+        week__school_year=school_year
+    ).values_list('school_class_id', 'week_id', 'pk')
+    cells_by_class = {}
+    for class_id, week_id, presence_id in presences:
+        row = cells_by_class.setdefault(class_id, [None] * len(weeks))
+        row[column_of[week_id]] = presence_id
+    return {
+        'school_year': {'id': school_year.pk, 'name': school_year.name},
+        'weeks': [
+            {
+                'id': week.pk,
+                'start_date': week.start_date.isoformat(),
+                'label': week.label,
+            }
+            for week in weeks
+        ],
+        'classes': [
+            {
+                'id': class_id,
+                'name': name,
+                'cells': cells_by_class.get(class_id, [None] * len(weeks)),
+            }
+            for class_id, name in school_year.classes.values_list(
+                'pk', 'name'
+            ).order_by('name')
+        ],
+    }

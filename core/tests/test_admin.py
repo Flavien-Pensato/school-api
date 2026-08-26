@@ -1,5 +1,5 @@
-"""Back-office actions: generate a school's tasks, a year's classes,
-and a class's groups."""
+"""Back-office actions: generate a school's tasks, a year's classes and
+weeks, and a class's groups."""
 
 from django.contrib.admin.helpers import ACTION_CHECKBOX_NAME
 from django.contrib.auth import get_user_model
@@ -12,6 +12,7 @@ from core.models import (
     Group,
     SchoolClass,
     Task,
+    Week,
 )
 
 from .factories import make_class, make_school, make_task, make_year
@@ -146,3 +147,27 @@ class AdminGenerateActionsTests(TestCase):
         self.post('admin:core_schoolclass_changelist', [school_class],
                   'generate_groups')
         self.assertEqual(Group.objects.count(), 0)
+
+    def test_generate_weeks_fills_the_year(self):
+        """A year created in the admin has no weeks — without them the
+        presence grid has no columns."""
+        self.assertEqual(self.year.weeks.count(), 0)
+        self.post(
+            'admin:core_schoolyear_changelist', [self.year], 'generate_weeks'
+        )
+        weeks = list(self.year.weeks.order_by('start_date'))
+        self.assertGreater(len(weeks), 40)
+        self.assertTrue(all(w.start_date.weekday() == 0 for w in weeks))
+        self.assertLessEqual(weeks[0].start_date, self.year.start_date)
+        self.assertLessEqual(weeks[-1].start_date, self.year.end_date)
+
+    def test_generate_weeks_is_idempotent(self):
+        for _ in range(2):
+            self.post(
+                'admin:core_schoolyear_changelist', [self.year],
+                'generate_weeks',
+            )
+        count = self.year.weeks.count()
+        self.assertEqual(
+            Week.objects.filter(school_year=self.year).count(), count
+        )

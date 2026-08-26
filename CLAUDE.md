@@ -37,6 +37,6 @@ Django 6 + Django REST Framework API.
 ## Domain rules
 
 - **"Year" always means the French school year** (*année scolaire*): ~September → June, spans two calendar years, named "2026-2027". Never assume calendar-year alignment; `Week` rows (one per ISO Monday in the `SchoolYear` range) are the anchor for presence/assignments — not raw ISO week numbers.
-- Multi-school: every queryset must go through `.for_user(user)` (scoped managers) and writable FKs through `UserScopedPKField` — data is isolated per `SchoolMembership`.
+- Multi-school: every queryset must go through `.for_user(user)` (scoped managers) and writable FKs through `UserScopedPKField` — data is isolated per `SchoolMembership`. In the admin that scoping comes from the `SchoolScopedAdmin` mixin; `School`, `Week` and the auth models stay superuser-only (no mixin, no Permission rows).
 - `Enrollment` = student ↔ class ↔ group for one year; students persist across years.
 - Rotation (`services.generate_week_assignments`): each active task → one group among present classes' groups; rest + pair fairness from same-year history; `is_manual=True` assignments survive regeneration.

@@ -18,6 +18,7 @@ from .models import (
     Task,
     Week,
 )
+from .permissions import is_school_member
 
 class NamesForm(forms.Form):
     """One name per line; blank lines and duplicates ignored."""
@@ -90,9 +91,60 @@ def _confirm(modeladmin, request, queryset, form_class, action_name, **context):
     })
 
 
-# Admin is superuser territory (Keycloak realm role django-superuser); no
-# per-school scoping here for v1 — staff use the API. If is_staff users ever
-# get admin access, scope each ModelAdmin.get_queryset with .for_user().
+# School and Week stay superuser-only: tenancy and derived data.
+
+
+class SchoolScopedAdmin:
+    """Per-school scoping of a ModelAdmin for is_staff (non-superuser) users.
+
+    Membership is the only gate: this project has no Permission rows and no
+    auth Groups (`core.keycloak.sync_user_roles` rewrites is_staff /
+    is_superuser from the Keycloak realm roles on every login, so hand-granted
+    perms would be the only mutable state and would silently rot). A staff user
+    with at least one SchoolMembership gets view/add/change/delete on this
+    model, restricted to the rows and the FK choices of their own schools — the
+    same isolation the API gets from `.for_user()` and `UserScopedPKField`. A
+    staff user with no membership sees nothing.
+
+    ModelAdmins without this mixin fall back to Django's Permission-based
+    defaults, which with no Permission rows means superuser-only.
+
+    Mix in first: `class TaskAdmin(SchoolScopedAdmin, admin.ModelAdmin)`, so
+    that a later get_queryset override still runs `.for_user()`. ModelAdmin
+    only — InlineModelAdmin.has_add_permission takes (request, obj).
+    """
+
+    def _is_member(self, request):
+        # Cached per request: the index calls the has_* hooks once per model.
+        if not hasattr(request, '_school_member'):
+            request._school_member = is_school_member(request.user)
+        return request._school_member
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).for_user(request.user)
+
+    def formfield_for_foreignkey(self, db_field, request, **kwargs):
+        # Every scoped model's manager knows its own path to School, so no
+        # per-FK lookup table; unscoped targets (auth.User) are left alone.
+        manager = db_field.remote_field.model._default_manager
+        if hasattr(manager, 'for_user'):
+            kwargs['queryset'] = manager.for_user(request.user)
+        return super().formfield_for_foreignkey(db_field, request, **kwargs)
+
+    def has_module_permission(self, request):
+        return self._is_member(request)
+
+    def has_view_permission(self, request, obj=None):
+        return self._is_member(request)
+
+    def has_add_permission(self, request):
+        return self._is_member(request)
+
+    def has_change_permission(self, request, obj=None):
+        return self._is_member(request)
+
+    def has_delete_permission(self, request, obj=None):
+        return self._is_member(request)
 
 
 class SchoolMembershipInline(admin.TabularInline):
@@ -106,39 +158,13 @@ class SchoolAdmin(admin.ModelAdmin):
     list_display = ['name']
     search_fields = ['name']
     inlines = [SchoolMembershipInline]
-    actions = ['generate_tasks']
-
-    @admin.action(description='Générer les tâches par défaut')
-    def generate_tasks(self, request, queryset):
-        result = _confirm(
-            self, request, queryset, TaskNamesForm, 'generate_tasks',
-            title='Générer les tâches',
-            description=(
-                'Une tâche par ligne, dans l\'ordre de rotation. Les tâches '
-                'déjà existantes sont conservées telles quelles.'
-            ),
-            submit_label='Générer les tâches',
-        )
-        if not isinstance(result, TaskNamesForm):
-            return result
-
-        names = result.cleaned_data['names']
-        created = 0
-        for school in queryset:
-            _, school_created = school.generate_tasks(names)
-            created += school_created
-        self.message_user(
-            request,
-            f'{created} tâche(s) créée(s) sur {queryset.count()} école(s) ; '
-            f'{len(names) * queryset.count() - created} déjà existante(s).',
-        )
 
 
 @admin.register(SchoolYear)
-class SchoolYearAdmin(admin.ModelAdmin):
+class SchoolYearAdmin(SchoolScopedAdmin, admin.ModelAdmin):
     list_display = ['name', 'school', 'start_date', 'end_date', 'week_count']
-    list_filter = ['school']
-    actions = ['generate_classes', 'generate_weeks']
+    list_filter = [('school', admin.RelatedOnlyFieldListFilter)]
+    actions = ['generate_classes', 'generate_weeks', 'generate_tasks']
 
     @admin.display(description='semaines')
     def week_count(self, obj):
@@ -184,6 +210,37 @@ class SchoolYearAdmin(admin.ModelAdmin):
         )
 
 
+    @admin.action(description='Générer les tâches par défaut')
+    def generate_tasks(self, request, queryset):
+        """Tasks belong to the school, not the year; this action lives here
+        because SchoolAdmin is superuser-only."""
+        result = _confirm(
+            self, request, queryset, TaskNamesForm, 'generate_tasks',
+            title='Générer les tâches',
+            description=(
+                'Une tâche par ligne, dans l\'ordre de rotation. Les tâches '
+                'déjà existantes sont conservées telles quelles.'
+            ),
+            submit_label='Générer les tâches',
+        )
+        if not isinstance(result, TaskNamesForm):
+            return result
+
+        names = result.cleaned_data['names']
+        # Distinct schools: selecting two years of the same school must not
+        # generate its tasks twice.
+        schools = {year.school for year in queryset}
+        created = 0
+        for school in schools:
+            _, school_created = school.generate_tasks(names)
+            created += school_created
+        self.message_user(
+            request,
+            f'{created} tâche(s) créée(s) sur {len(schools)} école(s) ; '
+            f'{len(names) * len(schools) - created} déjà existante(s).',
+        )
+
+
 @admin.register(Week)
 class WeekAdmin(admin.ModelAdmin):
     list_display = ['__str__', 'start_date', 'school_year']
@@ -192,16 +249,16 @@ class WeekAdmin(admin.ModelAdmin):
 
 
 @admin.register(Student)
-class StudentAdmin(admin.ModelAdmin):
+class StudentAdmin(SchoolScopedAdmin, admin.ModelAdmin):
     list_display = ['last_name', 'first_name', 'school', 'external_id']
-    list_filter = ['school']
+    list_filter = [('school', admin.RelatedOnlyFieldListFilter)]
     search_fields = ['last_name', 'first_name', 'external_id']
 
 
 @admin.register(SchoolClass)
-class SchoolClassAdmin(admin.ModelAdmin):
+class SchoolClassAdmin(SchoolScopedAdmin, admin.ModelAdmin):
     list_display = ['name', 'school_year', 'group_count']
-    list_filter = ['school_year']
+    list_filter = [('school_year', admin.RelatedOnlyFieldListFilter)]
     search_fields = ['name']
     actions = ['generate_groups']
 
@@ -238,33 +295,33 @@ class SchoolClassAdmin(admin.ModelAdmin):
 
 
 @admin.register(Group)
-class GroupAdmin(admin.ModelAdmin):
+class GroupAdmin(SchoolScopedAdmin, admin.ModelAdmin):
     list_display = ['name', 'school_class']
-    list_filter = ['school_class__school_year']
+    list_filter = [('school_class__school_year', admin.RelatedOnlyFieldListFilter)]
     search_fields = ['name']
 
 
 @admin.register(Enrollment)
-class EnrollmentAdmin(admin.ModelAdmin):
+class EnrollmentAdmin(SchoolScopedAdmin, admin.ModelAdmin):
     list_display = ['student', 'school_class', 'group']
-    list_filter = ['school_year']
+    list_filter = [('school_year', admin.RelatedOnlyFieldListFilter)]
     autocomplete_fields = ['student']
 
 
 @admin.register(Task)
-class TaskAdmin(admin.ModelAdmin):
+class TaskAdmin(SchoolScopedAdmin, admin.ModelAdmin):
     list_display = ['name', 'school', 'is_active']
-    list_filter = ['school', 'is_active']
+    list_filter = [('school', admin.RelatedOnlyFieldListFilter), 'is_active']
     search_fields = ['name']
 
 
 @admin.register(ClassPresence)
-class ClassPresenceAdmin(admin.ModelAdmin):
+class ClassPresenceAdmin(SchoolScopedAdmin, admin.ModelAdmin):
     list_display = ['school_class', 'week']
-    list_filter = ['week__school_year']
+    list_filter = [('week__school_year', admin.RelatedOnlyFieldListFilter)]
 
 
 @admin.register(Assignment)
-class AssignmentAdmin(admin.ModelAdmin):
+class AssignmentAdmin(SchoolScopedAdmin, admin.ModelAdmin):
     list_display = ['week', 'task', 'group', 'is_manual']
-    list_filter = ['week__school_year', 'is_manual']
+    list_filter = [('week__school_year', admin.RelatedOnlyFieldListFilter), 'is_manual']

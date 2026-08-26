@@ -17,6 +17,16 @@ from core.models import (
 
 User = get_user_model()
 
+# Admin templates load static assets; the prod manifest storage needs a
+# collectstatic run, which tests must not depend on. Use with
+# @override_settings(STORAGES=ADMIN_STORAGES) on any admin TestCase.
+ADMIN_STORAGES = {
+    'default': {'BACKEND': 'django.core.files.storage.FileSystemStorage'},
+    'staticfiles': {
+        'BACKEND': 'django.contrib.staticfiles.storage.StaticFilesStorage'
+    },
+}
+
 
 def make_user(username='staff', school=None, **kwargs):
     user = User.objects.create_user(username=username, **kwargs)

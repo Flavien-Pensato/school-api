@@ -1,5 +1,5 @@
-"""Back-office actions: generate a school's tasks, a year's classes and
-weeks, and a class's groups."""
+"""Back-office actions: generate a school's tasks (from its year), a
+year's classes and weeks, and a class's groups."""
 
 from django.contrib.admin.helpers import ACTION_CHECKBOX_NAME
 from django.contrib.auth import get_user_model
@@ -15,19 +15,18 @@ from core.models import (
     Week,
 )
 
-from .factories import make_class, make_school, make_task, make_year
+from .factories import (
+    ADMIN_STORAGES,
+    make_class,
+    make_school,
+    make_task,
+    make_year,
+)
 
 User = get_user_model()
 
 
-# Admin templates load static assets; the prod manifest storage needs a
-# collectstatic run, which tests must not depend on.
-@override_settings(STORAGES={
-    'default': {'BACKEND': 'django.core.files.storage.FileSystemStorage'},
-    'staticfiles': {
-        'BACKEND': 'django.contrib.staticfiles.storage.StaticFilesStorage'
-    },
-})
+@override_settings(STORAGES=ADMIN_STORAGES)
 class AdminGenerateActionsTests(TestCase):
     @classmethod
     def setUpTestData(cls):
@@ -49,7 +48,7 @@ class AdminGenerateActionsTests(TestCase):
 
     def test_generate_tasks_shows_prefilled_form_first(self):
         response = self.post(
-            'admin:core_school_changelist', [self.school], 'generate_tasks'
+            'admin:core_schoolyear_changelist', [self.year], 'generate_tasks'
         )
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'Générer les tâches')
@@ -58,7 +57,7 @@ class AdminGenerateActionsTests(TestCase):
 
     def test_generate_tasks_creates_the_edited_list_in_order(self):
         response = self.post(
-            'admin:core_school_changelist', [self.school], 'generate_tasks',
+            'admin:core_schoolyear_changelist', [self.year], 'generate_tasks',
             {'confirmed': '1', 'names': 'Vaisselle midi\nFoyer\n\n  Véhicules  \n'},
         )
         self.assertEqual(response.status_code, 200)
@@ -71,9 +70,9 @@ class AdminGenerateActionsTests(TestCase):
     def test_generate_tasks_reuses_existing_ones(self):
         existing = make_task(self.school, 'Foyer', is_active=False)
         data = {'confirmed': '1', 'names': 'Foyer\nVéhicules'}
-        self.post('admin:core_school_changelist', [self.school],
+        self.post('admin:core_schoolyear_changelist', [self.year],
                   'generate_tasks', data)
-        self.post('admin:core_school_changelist', [self.school],
+        self.post('admin:core_schoolyear_changelist', [self.year],
                   'generate_tasks', data)
         self.assertEqual(self.school.tasks.count(), 2)
         # an existing task keeps its flag — regeneration must not re-activate it

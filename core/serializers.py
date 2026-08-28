@@ -95,11 +95,11 @@ class SchoolClassSerializer(serializers.ModelSerializer):
 
 
 class GroupSerializer(serializers.ModelSerializer):
-    school_class = UserScopedPKField(queryset=SchoolClass.objects.all())
+    school_year = UserScopedPKField(queryset=SchoolYear.objects.all())
 
     class Meta:
         model = Group
-        fields = ['id', 'school_class', 'name']
+        fields = ['id', 'school_year', 'name']
 
 
 class EnrollmentSerializer(ModelCleanMixin, serializers.ModelSerializer):

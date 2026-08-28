@@ -1,3 +1,5 @@
+from datetime import date
+
 from rest_framework.test import APITestCase
 
 from core.models import Enrollment
@@ -20,7 +22,7 @@ class CrudAPITests(APITestCase):
         cls.user = make_user('staff-a', school=cls.school)
         cls.year = make_year(cls.school)
         cls.cls_4a = make_class(cls.year, '4A')
-        cls.group1 = make_group(cls.cls_4a, 'Groupe 1')
+        cls.group1 = make_group(cls.year, 'Groupe 1')
         cls.other_year = make_year(cls.other_school)
         cls.other_class = make_class(cls.other_year, '3C')
 
@@ -44,7 +46,7 @@ class CrudAPITests(APITestCase):
 
     def test_enrollment_move_between_groups(self):
         student = make_student(self.school)
-        group2 = make_group(self.cls_4a, 'Groupe 2')
+        group2 = make_group(self.year, 'Groupe 2')
         created = self.client.post('/api/enrollments/', {
             'student': student.pk,
             'school_year': self.year.pk,
@@ -58,15 +60,30 @@ class CrudAPITests(APITestCase):
         self.assertEqual(moved.status_code, 200)
         self.assertEqual(moved.data['group'], group2.pk)
 
-    def test_enrollment_group_from_other_class_rejected(self):
+    def test_enrollment_takes_a_group_holding_another_class(self):
         student = make_student(self.school)
         cls_4b = make_class(self.year, '4B')
-        group_4b = make_group(cls_4b, 'Groupe B1')
+        shared = make_group(self.year, 'Groupe B1', classes=[cls_4b])
         response = self.client.post('/api/enrollments/', {
             'student': student.pk,
             'school_year': self.year.pk,
             'school_class': self.cls_4a.pk,
-            'group': group_4b.pk,
+            'group': shared.pk,
+        })
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(shared.enrollments.count(), 2)
+
+    def test_enrollment_group_from_other_year_rejected(self):
+        student = make_student(self.school)
+        next_year = make_year(
+            self.school, name='2027-2028',
+            start=date(2027, 9, 6), end=date(2028, 6, 23), with_weeks=False,
+        )
+        response = self.client.post('/api/enrollments/', {
+            'student': student.pk,
+            'school_year': self.year.pk,
+            'school_class': self.cls_4a.pk,
+            'group': make_group(next_year, 'Groupe 1').pk,
         })
         self.assertEqual(response.status_code, 400)
         self.assertIn('group', response.data)
@@ -113,6 +130,7 @@ class CrudAPITests(APITestCase):
         )
         self.assertFalse(retired.data['is_active'])
 
-    def test_groups_filtered_by_class(self):
-        response = self.client.get(f'/api/groups/?school_class={self.cls_4a.pk}')
+    def test_groups_filtered_by_year(self):
+        make_group(self.other_year, 'Groupe 1')
+        response = self.client.get(f'/api/groups/?school_year={self.year.pk}')
         self.assertEqual(response.data['count'], 1)

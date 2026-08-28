@@ -8,6 +8,7 @@ from collections import Counter
 from datetime import date
 
 from django.db import transaction
+from django.db.models import Prefetch
 
 from .models import Assignment, ClassPresence, Enrollment, Group, Student, Task
 
@@ -258,7 +259,8 @@ def _min_cost_matching(groups, tasks, pair):
 def generate_week_assignments(week):
     """Auto-assign each active task to one eligible group for `week`.
 
-    Eligible groups: groups whose class has a ClassPresence for this week.
+    Eligible groups: groups with at least one member whose class has a
+    ClassPresence for this week.
     Manual assignments (is_manual=True) are preserved; their task and group
     are removed from the pools. Previous auto assignments for this week are
     replaced — re-running is idempotent.
@@ -284,11 +286,12 @@ def generate_week_assignments(week):
         .order_by('pk')
         if t.pk not in manual_task_ids
     ]
-    present_class_ids = ClassPresence.objects.filter(week=week).values_list(
-        'school_class_id', flat=True
-    )
     groups = [
-        g for g in Group.objects.filter(school_class_id__in=present_class_ids)
+        g for g in Group.objects.filter(
+            school_year=week.school_year,
+            enrollments__school_class__presences__week=week,
+        )
+        .distinct()
         .order_by('pk')
         if g.pk not in manual_group_ids
     ]
@@ -349,47 +352,54 @@ def generate_week_assignments(week):
 
 
 def build_week_dashboard(week):
-    """Nested view of a week: present classes → groups → students + task.
-    Shared by the JSON dashboard endpoint and the printable PDF."""
+    """Flat view of a week: every group on duty, with its task and its members.
+    Shared by the JSON dashboard endpoint and the printable PDF.
+
+    A group mixes classes, so only the members whose class is present are
+    listed — the others are not on site to do the chore. Groups keep the
+    model's numeric ordering (1, 2, … 10).
+    """
     assignments = {
         a.group_id: a
         for a in week.assignments.select_related('task')
     }
-    present_classes = [
-        p.school_class
-        for p in week.presences.select_related('school_class')
-        .order_by('school_class__name')
-    ]
-    classes = []
-    for school_class in present_classes:
-        groups = []
-        for group in school_class.groups.prefetch_related(
-            'enrollments__student'
-        ).order_by('name'):
-            assignment = assignments.get(group.pk)
-            groups.append({
-                'id': group.pk,
-                'name': group.name,
-                'students': [
-                    {
-                        'id': e.student.pk,
-                        'first_name': e.student.first_name,
-                        'last_name': e.student.last_name,
-                    }
-                    for e in sorted(
-                        group.enrollments.all(),
-                        key=lambda e: (e.student.last_name, e.student.first_name),
-                    )
-                ],
-                'task': (
-                    {'id': assignment.task.pk, 'name': assignment.task.name}
-                    if assignment else None
-                ),
-            })
-        classes.append({
-            'id': school_class.pk,
-            'name': school_class.name,
-            'groups': groups,
+    present_members = Enrollment.objects.filter(
+        school_class__presences__week=week
+    ).select_related('student', 'school_class')
+    groups = (
+        Group.objects.filter(
+            school_year=week.school_year,
+            enrollments__school_class__presences__week=week,
+        )
+        .distinct()
+        .prefetch_related(
+            Prefetch(
+                'enrollments', queryset=present_members, to_attr='on_site'
+            )
+        )
+    )
+    rows = []
+    for group in groups:
+        assignment = assignments.get(group.pk)
+        rows.append({
+            'id': group.pk,
+            'name': group.name,
+            'students': [
+                {
+                    'id': e.student.pk,
+                    'first_name': e.student.first_name,
+                    'last_name': e.student.last_name,
+                    'school_class': e.school_class.name,
+                }
+                for e in sorted(
+                    group.on_site,
+                    key=lambda e: (e.student.last_name, e.student.first_name),
+                )
+            ],
+            'task': (
+                {'id': assignment.task.pk, 'name': assignment.task.name}
+                if assignment else None
+            ),
         })
     return {
         'week': {
@@ -398,7 +408,7 @@ def build_week_dashboard(week):
             'label': week.label,
         },
         'school': {'id': week.school.pk, 'name': week.school.name},
-        'classes': classes,
+        'groups': rows,
     }
 
 
@@ -408,31 +418,28 @@ def build_year_stats(school_year):
     task_names = dict(
         Task.objects.filter(school=school_year.school).values_list('pk', 'name')
     )
-    presence_weeks = Counter()  # group_id -> weeks its class was present
-    group_rows = {}
-    groups = (
-        Group.objects.filter(school_class__school_year=school_year)
-        .select_related('school_class')
-        .order_by('school_class__name', 'name')
+    # A group is on duty as soon as one member's class is present, and two
+    # members can bring the same week in — count distinct (group, week) pairs.
+    weeks_present = Counter(
+        group_id
+        for group_id, _week_id in Enrollment.objects.filter(
+            school_year=school_year,
+            group__isnull=False,
+            school_class__presences__isnull=False,
+        )
+        .values_list('group_id', 'school_class__presences__week_id')
+        .distinct()
     )
-    for group in groups:
-        group_rows[group.pk] = {
+    group_rows = {
+        group.pk: {
             'group': {'id': group.pk, 'name': group.name},
-            'school_class': group.school_class.name,
             'totals': {},
             'total': 0,
-            'weeks_present': 0,
+            'weeks_present': weeks_present[group.pk],
             'weeks_rested': 0,
         }
-    class_presences = Counter(
-        ClassPresence.objects.filter(
-            week__school_year=school_year
-        ).values_list('school_class_id', flat=True)
-    )
-    for group in groups:
-        group_rows[group.pk]['weeks_present'] = class_presences[
-            group.school_class_id
-        ]
+        for group in Group.objects.filter(school_year=school_year)
+    }
     for group_id, task_id in Assignment.objects.filter(
         week__school_year=school_year
     ).values_list('group_id', 'task_id'):
@@ -452,25 +459,27 @@ def build_year_stats(school_year):
 
 def revoke_class_presence(presence):
     """Un-check one cell of the presence grid: the class is no longer on-site
-    that week, so its groups have no work that week either.
+    that week, so any group it emptied has no work that week either.
 
     Deleting the ClassPresence row alone is not enough. Assignment rows for
-    that class's groups survive, and nothing else clears them:
-    generate_week_assignments only deletes is_manual=False rows, and only for
-    classes it still considers present. Such orphans stay invisible in
-    build_week_dashboard (it iterates week.presences) while build_year_stats
-    keeps counting them into `total`, pushing `weeks_rested` negative.
+    the groups that just lost their last on-site member survive, and nothing
+    else clears them: generate_week_assignments only deletes is_manual=False
+    rows, and only for groups it still considers present. Such orphans stay
+    invisible in build_week_dashboard while build_year_stats keeps counting
+    them into `total`, pushing `weeks_rested` negative.
 
-    Manual assignments go too — an absent class cannot work, whoever typed
-    the override. Re-checking the box leaves the week un-assigned; run the
-    rotation again to refill it.
+    A group that still holds a member from another present class keeps its
+    assignment — it can do the chore short-handed. Manual assignments are not
+    spared when the group does empty out: nobody on site cannot work, whoever
+    typed the override. Re-checking the box leaves those tasks un-assigned;
+    run the rotation again to refill them.
     """
     with transaction.atomic():
-        removed, _ = Assignment.objects.filter(
-            week=presence.week,
-            group__school_class=presence.school_class,
-        ).delete()
+        week = presence.week
         presence.delete()
+        removed, _ = Assignment.objects.filter(week=week).exclude(
+            group__enrollments__school_class__presences__week=week
+        ).delete()
     return removed
 
 

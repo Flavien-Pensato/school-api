@@ -37,7 +37,7 @@ class RotationServiceTests(TestCase):
         return total, pair
 
     def test_deterministic(self):
-        groups = [make_group(self.cls, f'G{i}') for i in range(3)]
+        groups = [make_group(self.year, f'G{i}', classes=[self.cls]) for i in range(3)]
         [make_task(self.school, f'T{i}') for i in range(3)]
         week = self.weeks[0]
         make_presence(week, self.cls)
@@ -53,7 +53,7 @@ class RotationServiceTests(TestCase):
         self.assertEqual(Assignment.objects.count(), 3)
 
     def test_full_cycle_3_groups_3_tasks(self):
-        [make_group(self.cls, f'G{i}') for i in range(3)]
+        [make_group(self.year, f'G{i}', classes=[self.cls]) for i in range(3)]
         [make_task(self.school, f'T{i}') for i in range(3)]
         self.run_weeks(3)
         _, pair = self.counters()
@@ -62,7 +62,7 @@ class RotationServiceTests(TestCase):
         self.assertEqual(set(pair.values()), {1})
 
     def test_rest_fairness_4_groups_2_tasks(self):
-        [make_group(self.cls, f'G{i}') for i in range(4)]
+        [make_group(self.year, f'G{i}', classes=[self.cls]) for i in range(4)]
         [make_task(self.school, f'T{i}') for i in range(2)]
         self.run_weeks(4)
         total, _ = self.counters()
@@ -70,9 +70,9 @@ class RotationServiceTests(TestCase):
         self.assertEqual(sorted(total.values()), [2, 2, 2, 2])
 
     def test_absent_class_never_assigned(self):
-        make_group(self.cls, 'G-present')
+        make_group(self.year, 'G-present', classes=[self.cls])
         absent_cls = make_class(self.year, '4B')
-        absent_group = make_group(absent_cls, 'G-absent')
+        absent_group = make_group(self.year, 'G-absent', classes=[absent_cls])
         make_task(self.school)
         week = self.weeks[0]
         make_presence(week, self.cls)  # only 4A present
@@ -81,8 +81,26 @@ class RotationServiceTests(TestCase):
             Assignment.objects.filter(group=absent_group).exists()
         )
 
+    def test_mixed_group_works_when_one_member_class_is_present(self):
+        cls_b = make_class(self.year, '4B')
+        mixed = make_group(self.year, 'mixed', classes=[self.cls, cls_b])
+        make_task(self.school)
+        week = self.weeks[0]
+        make_presence(week, cls_b)  # 4A stays home, the 4B member covers
+        generate_week_assignments(week)
+        self.assertEqual(Assignment.objects.get().group, mixed)
+
+    def test_group_without_members_is_never_assigned(self):
+        empty = make_group(self.year, 'empty')
+        make_group(self.year, 'staffed', classes=[self.cls])
+        [make_task(self.school, f'T{i}') for i in range(2)]
+        week = self.weeks[0]
+        make_presence(week, self.cls)
+        generate_week_assignments(week)
+        self.assertFalse(Assignment.objects.filter(group=empty).exists())
+
     def test_manual_assignment_survives_regeneration(self):
-        groups = [make_group(self.cls, f'G{i}') for i in range(2)]
+        groups = [make_group(self.year, f'G{i}', classes=[self.cls]) for i in range(2)]
         tasks = [make_task(self.school, f'T{i}') for i in range(2)]
         week = self.weeks[0]
         make_presence(week, self.cls)
@@ -99,7 +117,7 @@ class RotationServiceTests(TestCase):
         self.assertEqual(len(result['assignments']), 2)
 
     def test_fewer_groups_than_tasks(self):
-        make_group(self.cls, 'G0')
+        make_group(self.year, 'G0', classes=[self.cls])
         [make_task(self.school, f'T{i}') for i in range(3)]
         week = self.weeks[0]
         make_presence(week, self.cls)
@@ -110,14 +128,14 @@ class RotationServiceTests(TestCase):
         )
 
     def test_no_presence_no_assignments(self):
-        make_group(self.cls)
+        make_group(self.year, classes=[self.cls])
         make_task(self.school)
         result = generate_week_assignments(self.weeks[0])
         self.assertEqual(result['assignments'], [])
         self.assertEqual(Assignment.objects.count(), 0)
 
     def test_inactive_task_skipped(self):
-        make_group(self.cls)
+        make_group(self.year, classes=[self.cls])
         make_task(self.school, 'Active')
         make_task(self.school, 'Retired', is_active=False)
         week = self.weeks[0]
@@ -131,9 +149,9 @@ class RotationServiceTests(TestCase):
         # two classes present every week, 5 groups total, 3 tasks
         cls_b = make_class(self.year, '4B')
         for i in range(3):
-            make_group(self.cls, f'A{i}')
+            make_group(self.year, f'A{i}', classes=[self.cls])
         for i in range(2):
-            make_group(cls_b, f'B{i}')
+            make_group(self.year, f'B{i}', classes=[cls_b])
         [make_task(self.school, f'T{i}') for i in range(3)]
         for week in self.weeks[:12]:
             make_presence(week, self.cls)
@@ -152,7 +170,7 @@ class AssignmentAPITests(APITestCase):
         cls.year = make_year(cls.school)
         cls.week = cls.year.weeks.order_by('start_date').first()
         cls.cls_4a = make_class(cls.year)
-        cls.groups = [make_group(cls.cls_4a, f'G{i}') for i in range(2)]
+        cls.groups = [make_group(cls.year, f'G{i}', classes=[cls.cls_4a]) for i in range(2)]
         cls.tasks = [make_task(cls.school, f'T{i}') for i in range(2)]
         make_presence(cls.week, cls.cls_4a)
 

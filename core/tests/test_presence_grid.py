@@ -1,6 +1,6 @@
 from rest_framework.test import APITestCase
 
-from core.models import Assignment, ClassPresence, Enrollment
+from core.models import Assignment, ClassPresence
 from core.services import (
     build_year_presence_grid,
     build_year_stats,
@@ -12,7 +12,6 @@ from .factories import (
     make_group,
     make_presence,
     make_school,
-    make_student,
     make_task,
     make_user,
     make_year,
@@ -104,8 +103,9 @@ class PresenceGridTests(APITestCase):
 
 
 class RevokePresenceTests(APITestCase):
-    """Un-checking a cell must leave no Assignment behind for the class that
-    just went absent — policy (a): the checkbox is the source of truth."""
+    """Un-checking a cell must leave no Assignment behind for the groups the
+    absent class just emptied — policy (a): the checkbox is the source of
+    truth. A group keeping a member from another present class works on."""
 
     @classmethod
     def setUpTestData(cls):
@@ -115,17 +115,15 @@ class RevokePresenceTests(APITestCase):
         cls.weeks = list(cls.year.weeks.order_by('start_date'))
         cls.cls_4a = make_class(cls.year, '4A')
         cls.cls_3b = make_class(cls.year, '3B')
-        cls.groups_4a = [make_group(cls.cls_4a, f'G{i}') for i in (1, 2)]
-        cls.groups_3b = [make_group(cls.cls_3b, f'G{i}') for i in (3, 4)]
+        cls.groups_4a = [
+            make_group(cls.year, f'G{i}', classes=[cls.cls_4a]) for i in (1, 2)
+        ]
+        cls.groups_3b = [
+            make_group(cls.year, f'G{i}', classes=[cls.cls_3b]) for i in (3, 4)
+        ]
         cls.tasks = [
             make_task(cls.school, name) for name in ('Vaisselle', 'Ménage')
         ]
-        for index, group in enumerate(cls.groups_4a + cls.groups_3b):
-            Enrollment.objects.create(
-                student=make_student(cls.school, f'P{index}', f'N{index}'),
-                school_year=cls.year, school_class=group.school_class,
-                group=group,
-            )
 
     def setUp(self):
         self.client.force_authenticate(self.user)
@@ -140,7 +138,7 @@ class RevokePresenceTests(APITestCase):
         generate_week_assignments(week)
         self.assertTrue(
             Assignment.objects.filter(
-                week=week, group__school_class=self.cls_4a
+                week=week, group__in=self.groups_4a
             ).exists()
         )
         self.uncheck(presence)
@@ -167,7 +165,7 @@ class RevokePresenceTests(APITestCase):
         generate_week_assignments(week)
         kept = set(
             Assignment.objects.filter(
-                week=week, group__school_class=self.cls_3b
+                week=week, group__in=self.groups_3b
             ).values_list('pk', flat=True)
         )
         self.assertTrue(kept)
@@ -180,6 +178,21 @@ class RevokePresenceTests(APITestCase):
             ),
             kept,
         )
+
+    def test_uncheck_spares_a_group_with_a_member_still_on_site(self):
+        week = self.weeks[0]
+        presence_4a = make_presence(week, self.cls_4a)
+        presence_3b = make_presence(week, self.cls_3b)
+        mixed = make_group(
+            self.year, 'G5', classes=[self.cls_4a, self.cls_3b]
+        )
+        Assignment.objects.create(
+            week=week, task=self.tasks[0], group=mixed, is_manual=True,
+        )
+        self.uncheck(presence_4a)
+        self.assertTrue(Assignment.objects.filter(group=mixed).exists())
+        self.uncheck(presence_3b)  # nobody left on site
+        self.assertFalse(Assignment.objects.filter(group=mixed).exists())
 
     def test_uncheck_spares_the_same_class_in_other_weeks(self):
         for week in self.weeks[:2]:

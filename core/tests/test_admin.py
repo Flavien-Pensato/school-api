@@ -1,5 +1,5 @@
-"""Back-office actions: generate a school's tasks (from its year), a
-year's classes and weeks, and a class's groups."""
+"""Back-office actions: generate a school's tasks (from its year), and a
+year's classes, weeks and groups."""
 
 from django.contrib.admin.helpers import ACTION_CHECKBOX_NAME
 from django.contrib.auth import get_user_model
@@ -9,6 +9,7 @@ from django.urls import reverse
 from core.models import (
     DEFAULT_CLASS_NAMES,
     DEFAULT_TASK_NAMES,
+    Enrollment,
     Group,
     SchoolClass,
     Task,
@@ -19,6 +20,7 @@ from .factories import (
     ADMIN_STORAGES,
     make_class,
     make_school,
+    make_student,
     make_task,
     make_year,
 )
@@ -112,40 +114,54 @@ class AdminGenerateActionsTests(TestCase):
 
     # --- groups ------------------------------------------------------------
 
-    def test_generate_groups_defaults_to_ten_per_class(self):
-        first, second = make_class(self.year, '3ème A'), make_class(self.year, '3ème B')
+    def test_generate_groups_numbers_the_whole_year(self):
         response = self.post(
-            'admin:core_schoolclass_changelist', [first, second],
+            'admin:core_schoolyear_changelist', [self.year],
             'generate_groups', {'confirmed': '1', 'count': '10'},
         )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(first.groups.count(), 10)
-        self.assertEqual(second.groups.count(), 10)
-        # numbering runs across the year: 1…10, then 11…20
         self.assertEqual(
-            list(first.groups.values_list('name', flat=True)),
+            list(self.year.groups.values_list('name', flat=True)),
             [str(number) for number in range(1, 11)],
-        )
-        self.assertEqual(
-            list(second.groups.values_list('name', flat=True)),
-            [str(number) for number in range(11, 21)],
         )
 
     def test_generate_groups_only_fills_the_gaps(self):
-        school_class = make_class(self.year, '3ème A')
-        kept = Group.objects.create(
-            school_class=school_class, name=school_class.group_name(3)
-        )
-        self.post('admin:core_schoolclass_changelist', [school_class],
+        kept = Group.objects.create(school_year=self.year, name='3')
+        self.post('admin:core_schoolyear_changelist', [self.year],
                   'generate_groups', {'confirmed': '1', 'count': '10'})
-        self.assertEqual(school_class.groups.count(), 10)
+        self.assertEqual(self.year.groups.count(), 10)
         self.assertTrue(Group.objects.filter(pk=kept.pk).exists())
 
     def test_generate_groups_form_writes_nothing(self):
-        school_class = make_class(self.year, '3ème A')
-        self.post('admin:core_schoolclass_changelist', [school_class],
+        self.post('admin:core_schoolyear_changelist', [self.year],
                   'generate_groups')
         self.assertEqual(Group.objects.count(), 0)
+
+    def test_reset_groups_replaces_the_old_per_class_blocks(self):
+        school_class = make_class(self.year, '3ème A')
+        old = Group.objects.create(school_year=self.year, name='11')
+        enrollment = Enrollment.objects.create(
+            student=make_student(self.school),
+            school_year=self.year, school_class=school_class, group=old,
+        )
+        response = self.post(
+            'admin:core_schoolyear_changelist', [self.year],
+            'reset_groups', {'confirmed': '1', 'count': '3'},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(Group.objects.filter(pk=old.pk).exists())
+        self.assertEqual(
+            list(self.year.groups.values_list('name', flat=True)),
+            ['1', '2', '3'],
+        )
+        enrollment.refresh_from_db()
+        self.assertIsNone(enrollment.group)  # students must be re-assigned
+
+    def test_reset_groups_form_writes_nothing(self):
+        kept = Group.objects.create(school_year=self.year, name='11')
+        self.post('admin:core_schoolyear_changelist', [self.year],
+                  'reset_groups')
+        self.assertEqual(list(Group.objects.all()), [kept])
 
     def test_generate_weeks_fills_the_year(self):
         """A year created in the admin has no weeks — without them the

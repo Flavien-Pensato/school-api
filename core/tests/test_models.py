@@ -93,7 +93,7 @@ class CleanValidationTests(TestCase):
         self.year = make_year(self.school)
         self.week = self.year.weeks.first()
         self.cls = make_class(self.year)
-        self.group = make_group(self.cls)
+        self.group = make_group(self.year, classes=[self.cls])
 
     def test_enrollment_class_must_match_year(self):
         other_year = make_year(
@@ -107,12 +107,24 @@ class CleanValidationTests(TestCase):
         with self.assertRaises(ValidationError):
             enrollment.full_clean()
 
-    def test_enrollment_group_must_match_class(self):
+    def test_enrollment_group_may_come_from_another_class(self):
         cls2 = make_class(self.year, name='4B')
         student = make_student(self.school)
         enrollment = Enrollment(
             student=student, school_year=self.year,
             school_class=cls2, group=self.group,
+        )
+        enrollment.full_clean()  # no raise
+
+    def test_enrollment_group_must_match_year(self):
+        other_year = make_year(
+            self.school, name='2027-2028',
+            start=date(2027, 9, 6), end=date(2028, 6, 23), with_weeks=False,
+        )
+        student = make_student(self.school)
+        enrollment = Enrollment(
+            student=student, school_year=other_year,
+            school_class=make_class(other_year), group=self.group,
         )
         with self.assertRaises(ValidationError):
             enrollment.full_clean()
@@ -169,65 +181,52 @@ class ScopedQuerySetTests(TestCase):
 
     def test_deep_lookup_group(self):
         from core.models import Group
-        cls_a = make_class(self.year_a)
-        cls_b = make_class(self.year_b)
-        group_a = make_group(cls_a)
-        make_group(cls_b)
+        group_a = make_group(self.year_a)
+        make_group(self.year_b)
         self.assertEqual(
             list(Group.objects.for_user(self.user_a)), [group_a]
         )
 
 
 class GroupNamingTests(TestCase):
-    """Group names must be unique for the whole year, not just the class."""
+    """Groups are numbered 1…N for the whole year and shared by every class."""
 
     @classmethod
     def setUpTestData(cls):
         cls.school = make_school('MFR Chatte')
         cls.year = make_year(cls.school, with_weeks=False)
-        cls.cls_a = make_class(cls.year, '3ème A')
-        cls.cls_b = make_class(cls.year, '3ème B')
 
     def test_generated_names_are_numbers(self):
-        groups, created = self.cls_a.generate_groups(2)
+        groups, created = self.year.generate_groups(2)
         self.assertEqual(created, 2)
         self.assertEqual([group.name for group in groups], ['1', '2'])
 
-    def test_numbering_continues_on_the_next_class(self):
-        self.cls_a.generate_groups(2)
-        groups, _ = self.cls_b.generate_groups(2)
-        self.assertEqual([group.name for group in groups], ['3', '4'])
-
-    def test_regenerating_keeps_the_class_block(self):
-        self.cls_a.generate_groups(2)
-        self.cls_b.generate_groups(2)
-        groups, created = self.cls_a.generate_groups(2)
+    def test_regenerating_creates_nothing(self):
+        self.year.generate_groups(2)
+        groups, created = self.year.generate_groups(2)
         self.assertEqual(created, 0)
         self.assertEqual([group.name for group in groups], ['1', '2'])
 
-    def test_growing_a_block_skips_a_sibling_class_numbers(self):
-        self.cls_a.generate_groups(2)
-        self.cls_b.generate_groups(2)
-        groups, created = self.cls_a.generate_groups(3)
-        self.assertEqual(created, 1)
-        self.assertEqual([group.name for group in groups], ['1', '2', '5'])
+    def test_growing_the_year_only_adds_the_missing_numbers(self):
+        self.year.generate_groups(2)
+        groups, created = self.year.generate_groups(4)
+        self.assertEqual(created, 2)
+        self.assertEqual(
+            [group.name for group in groups], ['1', '2', '3', '4']
+        )
 
     def test_same_name_twice_in_a_year_is_rejected(self):
-        Group.objects.create(school_class=self.cls_a, name='Les rouges')
+        Group.objects.create(school_year=self.year, name='Les rouges')
         with self.assertRaises(IntegrityError):
-            Group.objects.create(school_class=self.cls_b, name='Les rouges')
+            Group.objects.create(school_year=self.year, name='Les rouges')
 
     def test_same_name_in_another_year_is_allowed(self):
         next_year = make_year(
             self.school, name='2027-2028',
             start=date(2027, 9, 6), end=date(2028, 6, 30), with_weeks=False,
         )
-        Group.objects.create(school_class=self.cls_a, name='Les rouges')
+        Group.objects.create(school_year=self.year, name='Les rouges')
         other = Group.objects.create(
-            school_class=make_class(next_year, '3ème A'), name='Les rouges',
+            school_year=next_year, name='Les rouges',
         )
         self.assertEqual(other.school_year, next_year)
-
-    def test_school_year_is_derived_from_the_class(self):
-        group = Group.objects.create(school_class=self.cls_a, name='Les bleus')
-        self.assertEqual(group.school_year, self.year)

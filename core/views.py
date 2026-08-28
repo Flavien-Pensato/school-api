@@ -204,7 +204,7 @@ class GroupViewSet(SchoolScopedViewSetMixin, viewsets.ModelViewSet):
 
     def get_queryset(self):
         return self.filter_by_params(
-            super().get_queryset(), school_class='school_class_id'
+            super().get_queryset(), school_year='school_year_id'
         )
 
 

@@ -33,7 +33,7 @@ class WeekDashboardPdfTests(APITestCase):
         cls.year = make_year(cls.school)
         cls.week = cls.year.weeks.order_by('start_date').first()
         cls.cls_4a = make_class(cls.year)
-        group = make_group(cls.cls_4a)
+        group = make_group(cls.year)
         student = make_student(cls.school)
         Enrollment.objects.create(
             student=student, school_year=cls.year,

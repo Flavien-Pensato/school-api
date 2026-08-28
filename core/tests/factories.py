@@ -6,6 +6,7 @@ from django.contrib.auth import get_user_model
 
 from core.models import (
     ClassPresence,
+    Enrollment,
     Group,
     School,
     SchoolClass,
@@ -54,11 +55,20 @@ def make_class(year, name='4A'):
     return SchoolClass.objects.create(school_year=year, name=name)
 
 
-def make_group(school_class, name=None):
-    # Default name goes through the model so it stays unique within the year.
-    return Group.objects.create(
-        school_class=school_class, name=name or school_class.group_name(1)
-    )
+def make_group(year, name=None, classes=()):
+    """A group of the year. `classes` enrolls one throwaway student per class:
+    a group is only on duty for a week when a member's class is present."""
+    group = Group.objects.create(school_year=year, name=name or '1')
+    for school_class in classes:
+        Enrollment.objects.create(
+            student=make_student(
+                year.school, 'Membre', f'{group.name}-{school_class.name}'
+            ),
+            school_year=year,
+            school_class=school_class,
+            group=group,
+        )
+    return group
 
 
 def make_student(school, first_name='Jean', last_name='Dupont', **kwargs):

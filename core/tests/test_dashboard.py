@@ -23,7 +23,9 @@ class DashboardAndStatsTests(APITestCase):
         cls.year = make_year(cls.school)
         cls.weeks = list(cls.year.weeks.order_by('start_date'))
         cls.cls_4a = make_class(cls.year, '4A')
-        cls.groups = [make_group(cls.cls_4a, f'Groupe {i}') for i in (1, 2)]
+        # 4B never comes on site: its member must not show up on the sheet.
+        cls.cls_4b = make_class(cls.year, '4B')
+        cls.groups = [make_group(cls.year, f'Groupe {i}') for i in (1, 2)]
         cls.tasks = [make_task(cls.school, name) for name in ('Vaisselle', 'Ménage')]
         for index, group in enumerate(cls.groups):
             student = make_student(
@@ -33,6 +35,11 @@ class DashboardAndStatsTests(APITestCase):
                 student=student, school_year=cls.year,
                 school_class=cls.cls_4a, group=group,
             )
+        Enrollment.objects.create(
+            student=make_student(cls.school, 'Absent', 'Absent'),
+            school_year=cls.year, school_class=cls.cls_4b,
+            group=cls.groups[0],
+        )
         for week in cls.weeks[:3]:
             make_presence(week, cls.cls_4a)
             generate_week_assignments(week)
@@ -47,14 +54,14 @@ class DashboardAndStatsTests(APITestCase):
         data = response.data
         self.assertEqual(data['week']['id'], week.pk)
         self.assertEqual(data['school']['name'], self.school.name)
-        self.assertEqual(len(data['classes']), 1)
-        klass = data['classes'][0]
-        self.assertEqual(klass['name'], '4A')
-        self.assertEqual(len(klass['groups']), 2)
-        for group in klass['groups']:
+        self.assertEqual(
+            [g['name'] for g in data['groups']], ['Groupe 1', 'Groupe 2']
+        )
+        for group in data['groups']:
             self.assertEqual(len(group['students']), 1)
+            self.assertEqual(group['students'][0]['school_class'], '4A')
             self.assertIsNotNone(group['task'])
-        assigned = {g['task']['name'] for g in klass['groups']}
+        assigned = {g['task']['name'] for g in data['groups']}
         self.assertEqual(assigned, {'Vaisselle', 'Ménage'})
 
     def test_dashboard_absent_class_excluded(self):
@@ -62,7 +69,7 @@ class DashboardAndStatsTests(APITestCase):
         response = self.client.get(
             f'/api/weeks/{week_no_presence.pk}/dashboard/'
         )
-        self.assertEqual(response.data['classes'], [])
+        self.assertEqual(response.data['groups'], [])
 
     def test_stats_shape_and_counts(self):
         response = self.client.get(f'/api/school-years/{self.year.pk}/stats/')

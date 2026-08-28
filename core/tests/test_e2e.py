@@ -39,7 +39,7 @@ class EndToEndFlowTests(APITestCase):
 
         groups = [
             self.client.post('/api/groups/', {
-                'school_class': klass['id'], 'name': f'Groupe {i}',
+                'school_year': year['id'], 'name': f'Groupe {i}',
             }).data
             for i in (1, 2)
         ]
@@ -88,7 +88,7 @@ class EndToEndFlowTests(APITestCase):
         dashboard = self.client.get(
             f'/api/weeks/{weeks[0]["id"]}/dashboard/'
         ).data
-        group_rows = dashboard['classes'][0]['groups']
+        group_rows = dashboard['groups']
         self.assertEqual(len(group_rows), 2)
         self.assertTrue(all(len(g['students']) == 2 for g in group_rows))
         self.assertTrue(all(g['task'] for g in group_rows))

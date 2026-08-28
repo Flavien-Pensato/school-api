@@ -2,11 +2,11 @@ from datetime import timedelta
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
-from django.db import models
+from django.db import models, transaction
 from django.db.models.functions import Length
 
-# Back-office defaults: how many groups a class is split into, and the class
-# list MFR Chatte runs each year. Both are only starting points — the admin
+# Back-office defaults: how many groups a school year is split into, and
+# the class list MFR Chatte runs each year. Both are only starting points — the admin
 # "générer" actions let a superuser edit them before creating anything.
 DEFAULT_GROUP_COUNT = 10
 DEFAULT_CLASS_NAMES = [
@@ -172,6 +172,36 @@ class SchoolYear(models.Model):
             monday += timedelta(days=7)
         return weeks
 
+    def generate_groups(self, count=DEFAULT_GROUP_COUNT):
+        """Create the groups numbered 1…count for this year. Idempotent —
+        an existing group keeps its enrollments. Returns (groups, created)."""
+        groups, created = [], 0
+        for number in range(1, count + 1):
+            group, was_created = Group.objects.get_or_create(
+                school_year=self, name=str(number)
+            )
+            groups.append(group)
+            created += was_created
+        return groups, created
+
+    def reset_groups(self, count=DEFAULT_GROUP_COUNT):
+        """Drop every group of this year and recreate 1…count.
+
+        For a year still carrying the per-class blocks groups had before they
+        moved to the year (1…10 for the first class, 11…20 for the next):
+        those numbers no longer mean anything, and re-running generate_groups
+        would only add to them. Destructive and irreversible — deleting a
+        group cascades to its assignments and clears `Enrollment.group`, so
+        every student has to be put back in a group afterwards.
+
+        Returns (groups, deleted).
+        """
+        with transaction.atomic():
+            deleted = self.groups.count()
+            self.groups.all().delete()
+            groups, _ = self.generate_groups(count)
+        return groups, deleted
+
 
 class Week(models.Model):
     school_year = models.ForeignKey(
@@ -254,72 +284,20 @@ class SchoolClass(models.Model):
     def school(self):
         return self.school_year.school
 
-    def group_name(self, number):
-        """A group is named by its number alone: numbers run across the whole
-        year, so no class prefix is needed to keep them unique."""
-        return str(number)
-
-    def group_numbers(self):
-        """Numbers this class already holds; hand-typed non-numeric group
-        names are ignored."""
-        return {
-            int(name)
-            for name in self.groups.values_list('name', flat=True)
-            if name.isdigit()
-        }
-
-    def generate_groups(self, count=DEFAULT_GROUP_COUNT):
-        """Create `count` numbered groups for this class, taking the next free
-        block of numbers in the school year: the first class generated gets
-        1…10, the next 11…20, and so on.
-
-        Idempotent — a class that already holds numbers keeps its block, so
-        re-running only fills the gaps, and numbers held by a sibling class
-        are skipped rather than stolen. Returns (groups, created).
-        """
-        year_numbers = {
-            int(name)
-            for name in Group.objects.filter(
-                school_year=self.school_year
-            ).values_list('name', flat=True)
-            if name.isdigit()
-        }
-        own = self.group_numbers()
-        others = year_numbers - own
-        number = min(own) if own else max(year_numbers, default=0) + 1
-
-        groups, created = [], 0
-        while len(groups) < count:
-            if number not in others:
-                group, was_created = Group.objects.get_or_create(
-                    school_class=self, name=self.group_name(number)
-                )
-                groups.append(group)
-                created += was_created
-            number += 1
-        return groups, created
-
 
 class Group(models.Model):
-    """A work group inside a class, named by a number that is unique for the
-    whole school year, not just the class — so "7" reads unambiguously
-    wherever it appears (dashboards, PDFs, assignment lists) without its
-    class beside it.
-
-    `school_year` is denormalised from `school_class` — a UniqueConstraint
-    cannot span a relation — and kept in sync by save().
+    """A work group for one school year, named by a number unique within that
+    year. Members come from any class — a group mixes a 4ème A with a BTS 1 —
+    so "7" reads unambiguously wherever it appears (dashboards, PDFs,
+    assignment lists) without a class beside it.
     """
 
-    school_class = models.ForeignKey(
-        SchoolClass, on_delete=models.CASCADE, related_name='groups'
-    )
     school_year = models.ForeignKey(
-        SchoolYear, on_delete=models.CASCADE, related_name='groups',
-        editable=False,
+        SchoolYear, on_delete=models.CASCADE, related_name='groups'
     )
     name = models.CharField(max_length=150)
 
-    objects = school_scoped_manager('school_class__school_year__school')
+    objects = school_scoped_manager('school_year__school')
 
     class Meta:
         # Shortest name first so numbers sort 1, 2, … 10 rather than 1, 10, 2.
@@ -331,21 +309,17 @@ class Group(models.Model):
         ]
 
     def __str__(self):
-        return f'{self.name} — {self.school_class}'
-
-    def save(self, *args, **kwargs):
-        self.school_year = self.school_class.school_year
-        super().save(*args, **kwargs)
+        return f'{self.name} ({self.school_year.name})'
 
     @property
     def school(self):
-        return self.school_class.school_year.school
+        return self.school_year.school
 
 
 class Enrollment(models.Model):
-    """Ties a persistent Student to a per-year class; group membership lives
-    here so "one class per year" and "one group per year" are both
-    DB-enforced by the same unique constraint."""
+    """Ties a persistent Student to a per-year class and to a group of that
+    year; the group is free of the class, so "one class per year" and "one
+    group per year" are both DB-enforced by the same unique constraint."""
 
     student = models.ForeignKey(
         Student, on_delete=models.CASCADE, related_name='enrollments'
@@ -384,9 +358,9 @@ class Enrollment(models.Model):
                 errors['school_class'] = (
                     'Class does not belong to this school year.'
                 )
-        if self.group_id and self.school_class_id:
-            if self.group.school_class_id != self.school_class_id:
-                errors['group'] = 'Group does not belong to this class.'
+        if self.group_id and self.school_year_id:
+            if self.group.school_year_id != self.school_year_id:
+                errors['group'] = 'Group does not belong to this school year.'
         if self.student_id and self.school_year_id:
             if self.student.school_id != self.school_year.school_id:
                 errors['student'] = (
@@ -480,13 +454,13 @@ class Assignment(models.Model):
     def clean(self):
         errors = {}
         if self.week_id and self.group_id:
-            present = ClassPresence.objects.filter(
-                week_id=self.week_id,
-                school_class_id=self.group.school_class_id,
+            present = Enrollment.objects.filter(
+                group_id=self.group_id,
+                school_class__presences__week_id=self.week_id,
             ).exists()
             if not present:
                 errors['group'] = (
-                    "Group's class is not present this week."
+                    'No member of this group is present this week.'
                 )
         if self.week_id and self.task_id:
             if self.task.school_id != self.week.school_year.school_id:

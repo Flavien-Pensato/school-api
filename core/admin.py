@@ -1,5 +1,5 @@
 from django import forms
-from django.contrib import admin
+from django.contrib import admin, messages
 from django.shortcuts import render
 
 from .models import (
@@ -61,7 +61,7 @@ class TaskNamesForm(NamesForm):
 
 class GroupCountForm(forms.Form):
     count = forms.IntegerField(
-        label='Nombre de groupes par classe',
+        label='Nombre de groupes pour l\'année',
         min_value=1,
         max_value=50,
         initial=DEFAULT_GROUP_COUNT,
@@ -162,13 +162,23 @@ class SchoolAdmin(admin.ModelAdmin):
 
 @admin.register(SchoolYear)
 class SchoolYearAdmin(SchoolScopedAdmin, admin.ModelAdmin):
-    list_display = ['name', 'school', 'start_date', 'end_date', 'week_count']
+    list_display = [
+        'name', 'school', 'start_date', 'end_date', 'week_count',
+        'group_count',
+    ]
     list_filter = [('school', admin.RelatedOnlyFieldListFilter)]
-    actions = ['generate_classes', 'generate_weeks', 'generate_tasks']
+    actions = [
+        'generate_classes', 'generate_weeks', 'generate_groups',
+        'reset_groups', 'generate_tasks',
+    ]
 
     @admin.display(description='semaines')
     def week_count(self, obj):
         return obj.weeks.count()
+
+    @admin.display(description='groupes')
+    def group_count(self, obj):
+        return obj.groups.count()
 
     @admin.action(description='Générer les semaines de l\'année')
     def generate_weeks(self, request, queryset):
@@ -209,6 +219,62 @@ class SchoolYearAdmin(SchoolScopedAdmin, admin.ModelAdmin):
             f'{len(names) * queryset.count() - created} déjà existante(s).',
         )
 
+    @admin.action(description='Générer les groupes de l\'année')
+    def generate_groups(self, request, queryset):
+        result = _confirm(
+            self, request, queryset, GroupCountForm, 'generate_groups',
+            title='Générer les groupes',
+            description=(
+                'Crée les groupes « 1 » … « N » pour chaque année '
+                'sélectionnée. Un groupe rassemble des élèves de n’importe '
+                'quelle classe. Les groupes existants sont conservés.'
+            ),
+            submit_label='Générer les groupes',
+        )
+        if not isinstance(result, GroupCountForm):
+            return result
+
+        count = result.cleaned_data['count']
+        created = 0
+        for year in queryset:
+            _, year_created = year.generate_groups(count)
+            created += year_created
+        self.message_user(
+            request,
+            f'{created} groupe(s) créé(s) sur {queryset.count()} année(s) ; '
+            f'{count * queryset.count() - created} déjà existant(s).',
+        )
+
+    @admin.action(description='Réinitialiser les groupes de l\'année')
+    def reset_groups(self, request, queryset):
+        """Rebuild a year whose groups still follow the old per-class blocks.
+        Destructive — see SchoolYear.reset_groups."""
+        result = _confirm(
+            self, request, queryset, GroupCountForm, 'reset_groups',
+            title='Réinitialiser les groupes',
+            description=(
+                'Supprime TOUS les groupes des années sélectionnées, puis '
+                'recrée « 1 » … « N ». Les élèves perdent leur groupe et les '
+                'tâches déjà attribuées sur ces années sont effacées. '
+                'Irréversible.'
+            ),
+            submit_label='Supprimer et recréer les groupes',
+        )
+        if not isinstance(result, GroupCountForm):
+            return result
+
+        count = result.cleaned_data['count']
+        deleted = 0
+        for year in queryset:
+            _, year_deleted = year.reset_groups(count)
+            deleted += year_deleted
+        self.message_user(
+            request,
+            f'{deleted} groupe(s) supprimé(s), '
+            f'{count * queryset.count()} recréé(s) sur '
+            f'{queryset.count()} année(s).',
+            messages.WARNING,
+        )
 
     @admin.action(description='Générer les tâches par défaut')
     def generate_tasks(self, request, queryset):
@@ -257,47 +323,16 @@ class StudentAdmin(SchoolScopedAdmin, admin.ModelAdmin):
 
 @admin.register(SchoolClass)
 class SchoolClassAdmin(SchoolScopedAdmin, admin.ModelAdmin):
-    list_display = ['name', 'school_year', 'group_count']
+    list_display = ['name', 'school_year']
     list_filter = [('school_year', admin.RelatedOnlyFieldListFilter)]
     search_fields = ['name']
-    actions = ['generate_groups']
-
-    @admin.display(description='groupes')
-    def group_count(self, obj):
-        return obj.groups.count()
-
-    @admin.action(description='Générer les groupes')
-    def generate_groups(self, request, queryset):
-        result = _confirm(
-            self, request, queryset, GroupCountForm, 'generate_groups',
-            title='Générer les groupes',
-            description=(
-                'Crée N groupes numérotés pour chaque classe sélectionnée. '
-                'La numérotation se poursuit d’une classe à l’autre sur '
-                'l’année : « 1 » … « 10 » pour la première, « 11 » … « 20 » '
-                'pour la suivante. Les groupes existants sont conservés.'
-            ),
-            submit_label='Générer les groupes',
-        )
-        if not isinstance(result, GroupCountForm):
-            return result
-
-        count = result.cleaned_data['count']
-        created = 0
-        for school_class in queryset:
-            _, class_created = school_class.generate_groups(count)
-            created += class_created
-        self.message_user(
-            request,
-            f'{created} groupe(s) créé(s) sur {queryset.count()} classe(s) ; '
-            f'{count * queryset.count() - created} déjà existant(s).',
-        )
 
 
 @admin.register(Group)
 class GroupAdmin(SchoolScopedAdmin, admin.ModelAdmin):
-    list_display = ['name', 'school_class']
-    list_filter = [('school_class__school_year', admin.RelatedOnlyFieldListFilter)]
+    list_display = ['name', 'school_year']
+    list_select_related = ['school_year']
+    list_filter = [('school_year', admin.RelatedOnlyFieldListFilter)]
     search_fields = ['name']
 
 

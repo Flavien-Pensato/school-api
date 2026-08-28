@@ -4,7 +4,15 @@ from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 from django.test import TestCase
 
-from core.models import Assignment, Enrollment, Group, Student, Week
+from core.models import (
+    Assignment,
+    DEFAULT_CLASS_NAMES,
+    Enrollment,
+    Group,
+    SchoolClass,
+    Student,
+    Week,
+)
 
 from .factories import (
     make_class,
@@ -230,3 +238,50 @@ class GroupNamingTests(TestCase):
             school_year=next_year, name='Les rouges',
         )
         self.assertEqual(other.school_year, next_year)
+
+
+class ClassOrderingTests(TestCase):
+    """Classes are listed by curriculum level, not alphabetically."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.school = make_school('MFR Chatte')
+        cls.year = make_year(cls.school, with_weeks=False)
+
+    def _names(self):
+        return list(
+            SchoolClass.objects.filter(school_year=self.year).values_list(
+                'name', flat=True
+            )
+        )
+
+    def test_generated_classes_follow_the_curriculum(self):
+        self.year.generate_classes(DEFAULT_CLASS_NAMES)
+        self.assertEqual(
+            self._names(),
+            [
+                '4ème A', '4ème B', '3ème A', '3ème B',
+                'Seconde', 'Première', 'Terminale',
+                'BTS 1', 'BTS 2',
+                'CAP 1 MACON + IMTB', 'CAP 1 CHARP BOIS + IS',
+                'CAP 2 MACON + IMTB', 'CAP 2 CHARP BOIS + IS',
+            ],
+        )
+
+    def test_shorthand_names_take_the_same_place(self):
+        for name in ['Term', '2nde', 'BTS1', '4 ème A']:
+            make_class(self.year, name)
+        self.assertEqual(self._names(), ['4 ème A', '2nde', 'Term', 'BTS1'])
+
+    def test_unknown_names_come_last_in_alphabetical_order(self):
+        for name in ['Zonzon', 'Seconde', 'Apprentis']:
+            make_class(self.year, name)
+        self.assertEqual(self._names(), ['Seconde', 'Apprentis', 'Zonzon'])
+
+    def test_explicit_position_is_kept(self):
+        make_class(self.year, 'Seconde')
+        pinned = SchoolClass.objects.create(
+            school_year=self.year, name='Zonzon', position=1
+        )
+        self.assertEqual(self._names(), ['Zonzon', 'Seconde'])
+        self.assertEqual(pinned.position, 1)

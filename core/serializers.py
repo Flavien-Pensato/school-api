@@ -91,7 +91,7 @@ class SchoolClassSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = SchoolClass
-        fields = ['id', 'school_year', 'name']
+        fields = ['id', 'school_year', 'name', 'position']
 
 
 class GroupSerializer(serializers.ModelSerializer):

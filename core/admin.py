@@ -323,7 +323,8 @@ class StudentAdmin(SchoolScopedAdmin, admin.ModelAdmin):
 
 @admin.register(SchoolClass)
 class SchoolClassAdmin(SchoolScopedAdmin, admin.ModelAdmin):
-    list_display = ['name', 'school_year']
+    list_display = ['name', 'school_year', 'position']
+    list_editable = ['position']
     list_filter = [('school_year', admin.RelatedOnlyFieldListFilter)]
     search_fields = ['name']
 

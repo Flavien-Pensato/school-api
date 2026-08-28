@@ -5,6 +5,8 @@ from django.core.exceptions import ValidationError
 from django.db import models, transaction
 from django.db.models.functions import Length
 
+from .ordering import default_position
+
 # Back-office defaults: how many groups a school year is split into, and
 # the class list MFR Chatte runs each year. Both are only starting points — the admin
 # "générer" actions let a superuser edit them before creating anything.
@@ -265,17 +267,30 @@ class SchoolClass(models.Model):
         SchoolYear, on_delete=models.CASCADE, related_name='classes'
     )
     name = models.CharField(max_length=100)
+    position = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text=(
+            "Ordre d'affichage. Laisser vide pour le déduire du nom "
+            'de la classe (voir core/ordering.py).'
+        ),
+    )
 
     objects = school_scoped_manager('school_year__school')
 
     class Meta:
-        ordering = ['name']
+        ordering = ['position', 'name']
         verbose_name_plural = 'school classes'
         constraints = [
             models.UniqueConstraint(
                 fields=['school_year', 'name'], name='unique_class_per_year'
             )
         ]
+
+    def save(self, *args, **kwargs):
+        if self.position is None:
+            self.position = default_position(self.name)
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f'{self.name} ({self.school_year.name})'

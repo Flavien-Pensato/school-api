@@ -97,9 +97,10 @@ class AdminGenerateActionsTests(TestCase):
             {'confirmed': '1', 'names': '3ème A\n3ème B\n\n  4ème A  \n'},
         )
         self.assertEqual(response.status_code, 200)
+        # Listed by curriculum level, not by the order they were typed in.
         self.assertEqual(
             list(self.year.classes.values_list('name', flat=True)),
-            ['3ème A', '3ème B', '4ème A'],
+            ['4ème A', '3ème A', '3ème B'],
         )
 
     def test_generate_classes_reuses_existing_ones(self):

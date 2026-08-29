@@ -33,12 +33,17 @@ def render_week_dashboard_pdf(dashboard):
 def _rows(groups):
     """Print-oriented view of the dashboard groups.
 
+    Only the groups on duty are printed -- a resting group has nothing to read
+    on a duty roster, and dropping them buys the rest a bigger font.
+
     A group almost always sits in a single class, so repeating "(3eme A)"
     after every name costs a line per row and buys nothing. Hoist the classes
     into their own column and leave the names bare.
     """
     rows = []
     for group in groups:
+        if not group['task']:
+            continue
         classes = list(dict.fromkeys(
             student['school_class'] for student in group['students']
         ))

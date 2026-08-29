@@ -22,16 +22,15 @@
     vertical-align: top;
     word-wrap: break-word;
   }
-  th { background: #eee; font-size: 0.9em; text-transform: uppercase; letter-spacing: 0.05em; }
+  th { background: #eee; font-size: 0.9em; text-transform: uppercase; letter-spacing: 0.05em; white-space: nowrap; }
   tr { page-break-inside: avoid; }
   /* table-layout: fixed reads its widths from the first row, so they live on
      the colgroup -- widths on the body cells are ignored. */
-  col.group { width: 5%; }
-  col.classes { width: 14%; }
-  col.students { width: 65%; }
-  col.task { width: 16%; }
+  col.group { width: 8%; }
+  col.classes { width: 16%; }
+  col.students { width: 54%; }
+  col.task { width: 22%; }
   td.task { font-weight: bold; }
-  .rest { color: #777; font-style: italic; }
   .empty { color: #777; font-style: italic; margin: 0.8em 0; }
 </style>
 </head>
@@ -55,17 +54,13 @@
           <td>
             {% for name in group.names %}{{ name }}{% if not forloop.last %}, {% endif %}{% empty %}—{% endfor %}
           </td>
-          {% if group.task %}
-            <td class="task">{{ group.task.name }}</td>
-          {% else %}
-            <td class="rest">Repos</td>
-          {% endif %}
+          <td class="task">{{ group.task.name }}</td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
   {% else %}
-    <p class="empty">Aucun groupe présent cette semaine.</p>
+    <p class="empty">Aucune tâche assignée cette semaine.</p>
   {% endif %}
 </body>
 </html>

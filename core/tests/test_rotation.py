@@ -114,7 +114,7 @@ class RotationServiceTests(TestCase):
         manual.refresh_from_db()  # still exists
         self.assertTrue(manual.is_manual)
         auto = {a.task.name: a.group for a in Assignment.objects.filter(is_manual=False)}
-        self.assertEqual(auto['Ménage 4A'], groups[0])
+        self.assertEqual(auto['Classe 4A'], groups[0])
         self.assertEqual(auto['T1'], groups[1])
         self.assertEqual(len(result['assignments']), 3)
 
@@ -148,8 +148,72 @@ class RotationServiceTests(TestCase):
         generate_week_assignments(week)
         self.assertEqual(
             {a.task.name for a in Assignment.objects.all()},
-            {'Ménage 4A', 'Active'},
+            {'Classe 4A', 'Active'},
         )
+
+    def test_class_cleaning_goes_to_a_group_of_that_class(self):
+        cls_b = make_class(self.year, '4B')
+        a_group = make_group(self.year, 'A', classes=[self.cls])
+        b_group = make_group(self.year, 'B', classes=[cls_b])
+        make_task(self.school, 'T0')
+        week = self.weeks[0]
+        make_presence(week, self.cls)
+        make_presence(week, cls_b)
+        generate_week_assignments(week)
+        by_task = {a.task.name: a.group for a in Assignment.objects.all()}
+        self.assertEqual(by_task['Classe 4A'], a_group)
+        self.assertEqual(by_task['Classe 4B'], b_group)
+        # both groups are cleaning their own room: nobody is left for T0
+        self.assertNotIn('T0', by_task)
+
+    def test_cleaning_group_is_out_of_the_rotation(self):
+        [make_group(self.year, f'G{i}', classes=[self.cls]) for i in range(2)]
+        [make_task(self.school, f'T{i}') for i in range(2)]
+        week = self.weeks[0]
+        make_presence(week, self.cls)
+        generate_week_assignments(week)
+        cleaner = Assignment.objects.get(task__school_class=self.cls).group
+        self.assertEqual(Assignment.objects.filter(group=cleaner).count(), 1)
+
+    def test_cleaning_rotates_between_the_classes_groups(self):
+        [make_group(self.year, f'G{i}', classes=[self.cls]) for i in range(3)]
+        make_task(self.school, 'T0')
+        self.run_weeks(3)
+        cleaners = [
+            assignment.group_id
+            for assignment in Assignment.objects.filter(
+                task__school_class=self.cls
+            )
+        ]
+        self.assertEqual(len(cleaners), 3)
+        self.assertEqual(len(set(cleaners)), 3)  # a different group each week
+
+    def test_class_with_no_free_group_is_reported(self):
+        cls_b = make_class(self.year, '4B')
+        # the only group on site belongs to both classes; it can clean one
+        # room, and the other class is told why it got nobody.
+        make_group(self.year, 'shared', classes=[self.cls, cls_b])
+        week = self.weeks[0]
+        make_presence(week, self.cls)
+        make_presence(week, cls_b)
+        result = generate_week_assignments(week)
+        self.assertEqual(Assignment.objects.count(), 1)
+        self.assertEqual(
+            len([
+                line for line in result['explanation']
+                if 'no group of that class is free' in line
+            ]),
+            1,
+        )
+
+    def test_inactive_class_task_is_skipped(self):
+        make_group(self.year, 'G0', classes=[self.cls])
+        make_task(self.school, 'T0')
+        Task.objects.filter(school_class=self.cls).update(is_active=False)
+        week = self.weeks[0]
+        make_presence(week, self.cls)
+        generate_week_assignments(week)
+        self.assertEqual(Assignment.objects.get().task.name, 'T0')
 
     def test_long_simulation_fairness_invariants(self):
         # two classes present every week, 5 groups total, 3 rotating tasks

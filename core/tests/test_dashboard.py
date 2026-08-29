@@ -1,3 +1,5 @@
+from datetime import date
+
 from rest_framework.test import APITestCase
 
 from core.models import Enrollment
@@ -55,8 +57,11 @@ class DashboardAndStatsTests(APITestCase):
         self.assertEqual(data['week']['id'], week.pk)
         self.assertEqual(data['school']['name'], self.school.name)
         self.assertEqual(
-            [g['name'] for g in data['groups']], ['Groupe 1', 'Groupe 2']
+            sorted(g['name'] for g in data['groups']),
+            ['Groupe 1', 'Groupe 2'],
         )
+        # the class cleaning leads the sheet
+        self.assertEqual(data['groups'][0]['task']['school_class'], '4A')
         for group in data['groups']:
             self.assertEqual(len(group['students']), 1)
             self.assertEqual(group['students'][0]['school_class'], '4A')
@@ -66,7 +71,7 @@ class DashboardAndStatsTests(APITestCase):
         cleaning = [g for g in data['groups'] if g['task']['school_class']]
         self.assertEqual(len(cleaning), 1)
         self.assertEqual(cleaning[0]['task']['school_class'], '4A')
-        self.assertEqual(cleaning[0]['task']['name'], 'Ménage 4A')
+        self.assertEqual(cleaning[0]['task']['name'], 'Classe 4A')
         rotating = [g for g in data['groups'] if not g['task']['school_class']]
         self.assertEqual(len(rotating), 1)
         self.assertIn(rotating[0]['task']['name'], {'Vaisselle', 'Ménage'})
@@ -77,6 +82,25 @@ class DashboardAndStatsTests(APITestCase):
             f'/api/weeks/{week_no_presence.pk}/dashboard/'
         )
         self.assertEqual(response.data['groups'], [])
+
+    def test_stats_lists_this_years_tasks_only(self):
+        # another year's classes carry cleaning tasks of the same school;
+        # they would be a permanently empty column here.
+        other_year = make_year(
+            self.school, name='2027-2028',
+            start=date(2027, 9, 6), end=date(2028, 6, 30), with_weeks=False,
+        )
+        make_class(other_year, '5A')
+        response = self.client.get(f'/api/school-years/{self.year.pk}/stats/')
+        tasks = response.data['tasks']
+        self.assertEqual(
+            [task['name'] for task in tasks],
+            ['Classe 4A', 'Classe 4B', 'Vaisselle', 'Ménage'],
+        )
+        self.assertEqual(
+            [task['school_class'] for task in tasks],
+            ['4A', '4B', None, None],
+        )
 
     def test_stats_shape_and_counts(self):
         response = self.client.get(f'/api/school-years/{self.year.pk}/stats/')

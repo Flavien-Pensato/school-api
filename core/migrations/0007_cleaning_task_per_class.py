@@ -1,13 +1,13 @@
 """Backfill the per-class cleaning task for classes that already exist.
 
-Every class gets one "Ménage <classe>" task from now on (SchoolClass.save),
+Every class gets one "Classe <classe>" task from now on (SchoolClass.save),
 but classes created before that need one too -- the rotation looks the task
 up by class and would silently skip any class without one.
 """
 
 from django.db import migrations
 
-CLEANING_TASK_PREFIX = 'Ménage'
+CLEANING_TASK_PREFIX = 'Classe'
 
 
 def create_cleaning_tasks(apps, schema_editor):

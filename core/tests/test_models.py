@@ -2,6 +2,7 @@ from datetime import date
 
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError
+from django.db.models.deletion import ProtectedError
 from django.test import TestCase
 
 from core.models import (
@@ -11,8 +12,11 @@ from core.models import (
     Group,
     SchoolClass,
     Student,
+    Task,
     Week,
 )
+
+from core.services import generate_week_assignments
 
 from .factories import (
     make_class,
@@ -285,3 +289,99 @@ class ClassOrderingTests(TestCase):
         )
         self.assertEqual(self._names(), ['Zonzon', 'Seconde'])
         self.assertEqual(pinned.position, 1)
+
+
+class ClassCleaningTaskTests(TestCase):
+    """Every class carries one chore nobody enters: cleaning its own room.
+    It is born, renamed and buried with the class."""
+
+    def setUp(self):
+        self.school = make_school()
+        self.year = make_year(self.school)
+
+    def test_creating_a_class_creates_its_cleaning_task(self):
+        school_class = make_class(self.year, '4A')
+        task = Task.objects.get(school_class=school_class)
+        self.assertEqual(task.name, 'Classe 4A')
+        self.assertEqual(task.school, self.school)
+        self.assertTrue(task.is_active)
+        self.assertTrue(task.is_class_task)
+
+    def test_renaming_a_class_renames_its_task(self):
+        school_class = make_class(self.year, '4A')
+        school_class.name = '4B'
+        school_class.save()
+        self.assertEqual(
+            [task.name for task in Task.objects.filter(school_class=school_class)],
+            ['Classe 4B'],
+        )
+
+    def test_generated_classes_get_one_task_each(self):
+        self.year.generate_classes(['3A', '3B'])
+        self.year.generate_classes(['3A', '3B'])  # idempotent
+        self.assertEqual(
+            sorted(
+                Task.objects.filter(
+                    school_class__school_year=self.year
+                ).values_list('name', flat=True)
+            ),
+            ['Classe 3A', 'Classe 3B'],
+        )
+
+    def test_same_class_name_in_two_years_is_allowed(self):
+        make_class(self.year, '4A')
+        other = make_year(
+            self.school, name='2027-2028',
+            start=date(2027, 9, 6), end=date(2028, 6, 30),
+            with_weeks=False,
+        )
+        make_class(other, '4A')
+        self.assertEqual(Task.objects.filter(name='Classe 4A').count(), 2)
+
+    def with_history(self):
+        school_class = make_class(self.year, '4A')
+        make_group(self.year, 'G0', classes=[school_class])
+        week = self.year.weeks.first()
+        make_presence(week, school_class)
+        generate_week_assignments(week)
+        self.assertTrue(Assignment.objects.exists())
+        return school_class
+
+    def test_deleting_the_year_takes_its_classes_cleaning_history(self):
+        # The cleaning task hangs off the class, and Assignment.task is
+        # protected: without the class-task exception, dropping a year (or a
+        # school) would fail on a task nobody ever created by hand.
+        self.with_history()
+        self.year.delete()
+        self.assertFalse(Assignment.objects.exists())
+        self.assertFalse(Task.objects.filter(school_class__isnull=False).exists())
+
+    def test_deleting_classes_in_bulk_works_too(self):
+        school_class = self.with_history()
+        SchoolClass.objects.filter(pk=school_class.pk).delete()
+        self.assertFalse(Assignment.objects.exists())
+
+    def test_a_rotating_task_with_history_is_still_protected(self):
+        school_class = make_class(self.year, '4A')
+        make_group(self.year, 'G0', classes=[school_class])
+        make_group(self.year, 'G1', classes=[school_class])
+        task = make_task(self.school, 'Vaisselle')
+        week = self.year.weeks.first()
+        make_presence(week, school_class)
+        generate_week_assignments(week)
+        self.assertTrue(Assignment.objects.filter(task=task).exists())
+        with self.assertRaises(ProtectedError):
+            task.delete()
+
+    def test_deleting_a_class_takes_its_task_and_history(self):
+        school_class = make_class(self.year, '4A')
+        make_group(self.year, 'G0', classes=[school_class])
+        week = self.year.weeks.first()
+        make_presence(week, school_class)
+        generate_week_assignments(week)
+        self.assertTrue(Assignment.objects.exists())
+
+        class_pk = school_class.pk
+        school_class.delete()  # PROTECT on Assignment.task must not bite
+        self.assertFalse(Assignment.objects.exists())
+        self.assertFalse(Task.objects.filter(school_class_id=class_pk).exists())

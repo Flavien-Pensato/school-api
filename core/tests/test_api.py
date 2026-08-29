@@ -2,7 +2,7 @@ from datetime import date
 
 from rest_framework.test import APITestCase
 
-from core.models import Enrollment
+from core.models import Enrollment, Task
 
 from .factories import (
     make_class,
@@ -129,6 +129,25 @@ class CrudAPITests(APITestCase):
             f'/api/tasks/{created.data["id"]}/', {'is_active': False}
         )
         self.assertFalse(retired.data['is_active'])
+
+    def test_class_cleaning_tasks_are_hidden_by_default(self):
+        cleaning = Task.objects.get(school_class=self.cls_4a)
+        listed = self.client.get(f'/api/tasks/?school={self.school.pk}')
+        self.assertNotIn(
+            cleaning.pk, [task['id'] for task in listed.data['results']]
+        )
+        opted_in = self.client.get(
+            f'/api/tasks/?school={self.school.pk}&include_class_tasks=1'
+        )
+        self.assertIn(
+            cleaning.pk, [task['id'] for task in opted_in.data['results']]
+        )
+        by_class = self.client.get(
+            f'/api/tasks/?school_class={self.cls_4a.pk}'
+        )
+        self.assertEqual(
+            [task['id'] for task in by_class.data['results']], [cleaning.pk]
+        )
 
     def test_groups_filtered_by_year(self):
         make_group(self.other_year, 'Groupe 1')

@@ -2,6 +2,7 @@ from datetime import timedelta
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
+from django.db.models.deletion import ProtectedError
 from django.db import models, transaction
 from django.db.models.functions import Length
 
@@ -27,9 +28,9 @@ DEFAULT_CLASS_NAMES = [
     'BTS 2',
 ]
 # Label of the per-class chore created automatically with every class:
-# "Ménage 4ème A". Not part of DEFAULT_TASK_NAMES -- it is never entered by
+# "Classe 4ème A". Not part of DEFAULT_TASK_NAMES -- it is never entered by
 # hand and never rotates through the school-wide pool.
-CLEANING_TASK_PREFIX = 'Ménage'
+CLEANING_TASK_PREFIX = 'Classe'
 DEFAULT_TASK_NAMES = [
     'Vaisselle matin/soir',
     'Exterieur',
@@ -298,19 +299,6 @@ class SchoolClass(models.Model):
             super().save(*args, **kwargs)
             self.sync_cleaning_task()
 
-    def delete(self, *args, **kwargs):
-        """Drop the class's cleaning history before the class itself.
-
-        The cascade from SchoolClass reaches the cleaning Task, but
-        Assignment.task is PROTECT -- without clearing those rows first,
-        deleting a class that has ever been on site raises ProtectedError.
-        Deleting a class already cascades its enrollments and presences, so
-        this history is going away with it either way.
-        """
-        with transaction.atomic():
-            Assignment.objects.filter(task__school_class=self).delete()
-            return super().delete(*args, **kwargs)
-
     def sync_cleaning_task(self):
         """Create -- or rename, after the class is renamed -- the task for
         cleaning this class's own room. Idempotent."""
@@ -429,7 +417,7 @@ class Task(models.Model):
 
     Names are unique per school for the rotating pool only. A class task
     carries the class name, and a class name repeats across school years, so
-    "Ménage 4ème A" legitimately exists once per year.
+    "Classe 4ème A" legitimately exists once per year.
     """
 
     school = models.ForeignKey(
@@ -510,12 +498,43 @@ class ClassPresence(models.Model):
                 )
 
 
+def protect_unless_class_task(collector, field, sub_objs, using):
+    """on_delete for Assignment.task.
+
+    A chore that has already been handed out is never deleted by accident:
+    the history behind the fairness matrix would go with it. PROTECT.
+
+    A class's cleaning task is the exception. It is not a chore someone
+    typed, it is the class itself: it appears with the class and has to be
+    able to leave with it, the way that class's enrollments and presences
+    do. Without this, deleting a class -- or its school year, or the whole
+    school -- would fail on a task nobody ever created by hand.
+    """
+    class_task_ids = set(
+        Task.objects.filter(
+            pk__in={assignment.task_id for assignment in sub_objs},
+            school_class__isnull=False,
+        ).values_list('pk', flat=True)
+    )
+    protected = [
+        assignment for assignment in sub_objs
+        if assignment.task_id not in class_task_ids
+    ]
+    if protected:
+        raise ProtectedError(
+            "Cannot delete some instances of model 'Task' because they are "
+            "referenced through a protected foreign key: 'Assignment.task'",
+            protected,
+        )
+    models.CASCADE(collector, field, sub_objs, using)
+
+
 class Assignment(models.Model):
     week = models.ForeignKey(
         Week, on_delete=models.CASCADE, related_name='assignments'
     )
     task = models.ForeignKey(
-        Task, on_delete=models.PROTECT, related_name='assignments'
+        Task, on_delete=protect_unless_class_task, related_name='assignments'
     )
     group = models.ForeignKey(
         Group, on_delete=models.CASCADE, related_name='assignments'

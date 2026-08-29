@@ -442,8 +442,8 @@ def build_week_dashboard(week):
     Shared by the JSON dashboard endpoint and the printable PDF.
 
     A group mixes classes, so only the members whose class is present are
-    listed — the others are not on site to do the chore. Groups keep the
-    model's numeric ordering (1, 2, … 10).
+    listed — the others are not on site to do the chore. Class cleaning rows
+    lead; the rest keep the model's numeric ordering (1, 2, … 10).
     """
     assignments = {
         a.group_id: a
@@ -468,6 +468,9 @@ def build_week_dashboard(week):
     for group in groups:
         assignment = assignments.get(group.pk)
         rows.append({
+            '_is_class_task': bool(
+                assignment and assignment.task.school_class_id
+            ),
             'id': group.pk,
             'name': group.name,
             'students': [
@@ -496,6 +499,9 @@ def build_week_dashboard(week):
                 if assignment else None
             ),
         })
+    # Cleaning your own room comes first on the sheet: it is the line a
+    # class looks for, and the one that moves every week with who is on site.
+    rows.sort(key=lambda row: not row.pop('_is_class_task'))
     return {
         'week': {
             'id': week.pk,
@@ -521,7 +527,7 @@ def build_year_stats(school_year):
         )
         .select_related('school_class'),
         key=lambda task: (
-            task.school_class_id is not None,
+            task.school_class_id is None,  # class cleaning columns first
             task.school_class.position or 0 if task.school_class_id else 0,
             task.pk,
         ),

@@ -1,6 +1,6 @@
 from rest_framework.test import APITestCase
 
-from core.models import Assignment, ClassPresence
+from core.models import Assignment, ClassPresence, Task
 from core.services import (
     build_year_presence_grid,
     build_year_stats,
@@ -193,6 +193,34 @@ class RevokePresenceTests(APITestCase):
         self.assertTrue(Assignment.objects.filter(group=mixed).exists())
         self.uncheck(presence_3b)  # nobody left on site
         self.assertFalse(Assignment.objects.filter(group=mixed).exists())
+
+    def test_uncheck_drops_the_cleaning_of_the_class_that_left(self):
+        # The group cleaning 4A also has a member in 3B, so it stays on site
+        # and keeps working -- but 4A's room is not used, so it is not
+        # cleaned, and the row goes.
+        week = self.weeks[0]
+        presence_4a = make_presence(week, self.cls_4a)
+        make_presence(week, self.cls_3b)
+        mixed = make_group(
+            self.year, 'G6', classes=[self.cls_4a, self.cls_3b]
+        )
+        cleaning_4a = Task.objects.get(school_class=self.cls_4a)
+        Assignment.objects.create(
+            week=week, task=cleaning_4a, group=mixed, is_manual=True
+        )
+        Assignment.objects.create(
+            week=week, task=self.tasks[0], group=self.groups_3b[0],
+            is_manual=True,
+        )
+        self.uncheck(presence_4a)
+        self.assertFalse(
+            Assignment.objects.filter(week=week, task=cleaning_4a).exists()
+        )
+        self.assertTrue(
+            Assignment.objects.filter(
+                week=week, group=self.groups_3b[0]
+            ).exists()
+        )
 
     def test_uncheck_spares_the_same_class_in_other_weeks(self):
         for week in self.weeks[:2]:

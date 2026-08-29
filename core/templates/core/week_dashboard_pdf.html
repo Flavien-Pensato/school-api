@@ -31,6 +31,9 @@
   col.students { width: 54%; }
   col.task { width: 22%; }
   td.task { font-weight: bold; }
+  /* The room a class cleans is its own: shade those rows so a class finds
+     its line without reading the whole sheet. */
+  tr.cleaning td { background: #f2f2f2; }
   .empty { color: #777; font-style: italic; margin: 0.8em 0; }
 </style>
 </head>
@@ -48,7 +51,7 @@
       </thead>
       <tbody>
         {% for group in groups %}
-        <tr>
+        <tr{% if group.is_class_task %} class="cleaning"{% endif %}>
           <td class="group">{{ group.name }}</td>
           <td class="classes">{{ group.classes|default:"—" }}</td>
           <td>

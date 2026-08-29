@@ -123,7 +123,10 @@ class TaskSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Task
-        fields = ['id', 'school', 'name', 'is_active']
+        # school_class is read-only: a class task is born, renamed and dies
+        # with its class (SchoolClass.save / delete).
+        fields = ['id', 'school', 'school_class', 'name', 'is_active']
+        read_only_fields = ['school_class']
 
 
 class AssignmentSerializer(ModelCleanMixin, serializers.ModelSerializer):

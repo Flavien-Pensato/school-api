@@ -26,6 +26,10 @@ DEFAULT_CLASS_NAMES = [
     'BTS 1',
     'BTS 2',
 ]
+# Label of the per-class chore created automatically with every class:
+# "Ménage 4ème A". Not part of DEFAULT_TASK_NAMES -- it is never entered by
+# hand and never rotates through the school-wide pool.
+CLEANING_TASK_PREFIX = 'Ménage'
 DEFAULT_TASK_NAMES = [
     'Vaisselle matin/soir',
     'Exterieur',
@@ -290,7 +294,35 @@ class SchoolClass(models.Model):
     def save(self, *args, **kwargs):
         if self.position is None:
             self.position = default_position(self.name)
-        super().save(*args, **kwargs)
+        with transaction.atomic():
+            super().save(*args, **kwargs)
+            self.sync_cleaning_task()
+
+    def delete(self, *args, **kwargs):
+        """Drop the class's cleaning history before the class itself.
+
+        The cascade from SchoolClass reaches the cleaning Task, but
+        Assignment.task is PROTECT -- without clearing those rows first,
+        deleting a class that has ever been on site raises ProtectedError.
+        Deleting a class already cascades its enrollments and presences, so
+        this history is going away with it either way.
+        """
+        with transaction.atomic():
+            Assignment.objects.filter(task__school_class=self).delete()
+            return super().delete(*args, **kwargs)
+
+    def sync_cleaning_task(self):
+        """Create -- or rename, after the class is renamed -- the task for
+        cleaning this class's own room. Idempotent."""
+        task, _ = Task.objects.update_or_create(
+            school_class=self,
+            defaults={'school': self.school, 'name': self.cleaning_task_name},
+        )
+        return task
+
+    @property
+    def cleaning_task_name(self):
+        return f'{CLEANING_TASK_PREFIX} {self.name}'
 
     def __str__(self):
         return f'{self.name} ({self.school_year.name})'
@@ -386,8 +418,33 @@ class Enrollment(models.Model):
 
 
 class Task(models.Model):
+    """A chore. Two kinds share this table:
+
+    - school-wide tasks (`school_class` empty): the rotating pool any group
+      can be handed -- Vaisselle, Foyer, Extérieur...
+    - class tasks (`school_class` set): cleaning a class's own room. One is
+      created and renamed automatically with the class (see
+      SchoolClass.save); it is never entered by hand, and only a group with
+      members in that class can be given it.
+
+    Names are unique per school for the rotating pool only. A class task
+    carries the class name, and a class name repeats across school years, so
+    "Ménage 4ème A" legitimately exists once per year.
+    """
+
     school = models.ForeignKey(
         School, on_delete=models.CASCADE, related_name='tasks'
+    )
+    school_class = models.ForeignKey(
+        SchoolClass,
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name='cleaning_task',
+        help_text=(
+            'Renseigné uniquement pour le ménage de la salle de cette '
+            'classe. Géré automatiquement avec la classe.'
+        ),
     )
     name = models.CharField(max_length=255)
     is_active = models.BooleanField(default=True)
@@ -398,12 +455,28 @@ class Task(models.Model):
         ordering = ['id']  # deterministic rotation order
         constraints = [
             models.UniqueConstraint(
-                fields=['school', 'name'], name='unique_task_per_school'
-            )
+                fields=['school', 'name'],
+                name='unique_task_per_school',
+                condition=models.Q(school_class__isnull=True),
+            ),
+            models.UniqueConstraint(
+                fields=['school_class'], name='one_cleaning_task_per_class'
+            ),
         ]
 
     def __str__(self):
         return self.name
+
+    @property
+    def is_class_task(self):
+        return self.school_class_id is not None
+
+    def clean(self):
+        if self.school_class_id and self.school_id:
+            if self.school_class.school_year.school_id != self.school_id:
+                raise ValidationError(
+                    {'school_class': 'Class belongs to another school.'}
+                )
 
 
 class ClassPresence(models.Model):
@@ -469,13 +542,20 @@ class Assignment(models.Model):
     def clean(self):
         errors = {}
         if self.week_id and self.group_id:
-            present = Enrollment.objects.filter(
+            members = Enrollment.objects.filter(
                 group_id=self.group_id,
                 school_class__presences__week_id=self.week_id,
-            ).exists()
-            if not present:
+            )
+            # Cleaning a class's room is done by that class's own students:
+            # a member on site with another class is no help here.
+            class_id = self.task.school_class_id if self.task_id else None
+            if class_id:
+                members = members.filter(school_class_id=class_id)
+            if not members.exists():
                 errors['group'] = (
                     'No member of this group is present this week.'
+                    if not class_id else
+                    'No member of this group attends this class this week.'
                 )
         if self.week_id and self.task_id:
             if self.task.school_id != self.week.school_year.school_id:

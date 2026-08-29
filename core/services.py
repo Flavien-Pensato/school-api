@@ -8,7 +8,7 @@ from collections import Counter
 from datetime import date
 
 from django.db import transaction
-from django.db.models import Prefetch
+from django.db.models import Prefetch, Q
 
 from .models import Assignment, ClassPresence, Enrollment, Group, Student, Task
 
@@ -255,6 +255,80 @@ def _min_cost_matching(groups, tasks, pair):
     return list(solve(0, 0, 0)[2])
 
 
+def _assign_class_cleaning(week, groups, manual_task_ids, total, pair, last_assigned):
+    """Phase 0 — every class on site cleans its own room.
+
+    The chore is implicit: it exists because the class is present, nobody
+    enters it. It is carried by one group that has students in that class —
+    a group is on site with its own class, and cleaning someone else's room
+    is not the deal.
+
+    Classes are served most-constrained first (fewest candidate groups), so a
+    small class is not left empty-handed by a big one taking its only group.
+    Within a class the pick follows the same fairness shape as the rotation:
+    the group that did this room least often, then the one that worked least
+    overall, then rested longest, then lowest pk.
+
+    The picked groups are removed from the pool: `Assignment` allows one task
+    per group per week, and a group scrubbing its classroom has done its
+    share.
+
+    Returns (picks, explanation, remaining_groups).
+    """
+    tasks_by_class = {
+        task.school_class_id: task
+        for task in Task.objects.filter(
+            school_class__presences__week=week, is_active=True
+        ).select_related('school_class')
+        if task.pk not in manual_task_ids
+    }
+    # The class is present, so every enrollment in it is on site — no need to
+    # re-check presence per student.
+    groups_by_class = {}
+    for class_id, group_id in Enrollment.objects.filter(
+        school_class__presences__week=week, group__isnull=False
+    ).values_list('school_class_id', 'group_id').distinct():
+        groups_by_class.setdefault(class_id, set()).add(group_id)
+
+    available = {group.pk: group for group in groups}
+    picks, explanation = [], []
+    ordered = sorted(
+        tasks_by_class.items(),
+        key=lambda item: (
+            len(groups_by_class.get(item[0], ())),
+            item[1].school_class.position or 0,
+            item[1].school_class.name,
+        ),
+    )
+    for class_id, task in ordered:
+        candidates = [
+            available[pk]
+            for pk in groups_by_class.get(class_id, ())
+            if pk in available
+        ]
+        if not candidates:
+            explanation.append(
+                f'{task.name}: unassigned (no group of that class is free)'
+            )
+            continue
+        group = min(
+            candidates,
+            key=lambda g: (
+                pair[(g.pk, task.pk)],
+                total[g.pk],
+                last_assigned.get(g.pk, date.min),
+                g.pk,
+            ),
+        )
+        del available[group.pk]
+        picks.append((group, task))
+        explanation.append(
+            f'{group.name} → {task.name}: its class is on site, done '
+            f'{pair[(group.pk, task.pk)]}× before'
+        )
+    return picks, explanation, [g for g in groups if g.pk in available]
+
+
 @transaction.atomic
 def generate_week_assignments(week):
     """Auto-assign each active task to one eligible group for `week`.
@@ -266,6 +340,8 @@ def generate_week_assignments(week):
     replaced — re-running is idempotent.
 
     Fairness, over prior weeks of the same school year:
+    - Phase 0 (class cleaning): every class on site has its room cleaned by
+      one of its own groups; that group then rests from the rotation.
     - Phase 1 (rest fairness): if more groups than tasks, the groups with
       the fewest total assignments work first (tie: rested longest, then pk).
     - Phase 2 (pair fairness): greedy min-cost matching on how often each
@@ -282,7 +358,9 @@ def generate_week_assignments(week):
     manual_group_ids = {a.group_id for a in manual}
 
     tasks = [
-        t for t in Task.objects.filter(school=school, is_active=True)
+        t for t in Task.objects.filter(
+            school=school, is_active=True, school_class__isnull=True
+        )
         .order_by('pk')
         if t.pk not in manual_task_ids
     ]
@@ -316,6 +394,14 @@ def generate_week_assignments(week):
         for a in manual
     ]
 
+    # Phase 0 — class cleaning, before anything else: it is the only chore
+    # with a fixed set of eligible groups, so it picks first and the rotation
+    # works with what is left.
+    class_picks, class_explanation, groups = _assign_class_cleaning(
+        week, groups, manual_task_ids, total, pair, last_assigned
+    )
+    explanation.extend(class_explanation)
+
     # Phase 1 — who works this week (rest fairness).
     working = sorted(
         groups,
@@ -346,7 +432,7 @@ def generate_week_assignments(week):
     week.assignments.filter(is_manual=False).delete()
     created = Assignment.objects.bulk_create(
         Assignment(week=week, task=task, group=group, is_manual=False)
-        for group, task in picks
+        for group, task in class_picks + picks
     )
     return {'assignments': manual + created, 'explanation': explanation}
 
@@ -361,7 +447,7 @@ def build_week_dashboard(week):
     """
     assignments = {
         a.group_id: a
-        for a in week.assignments.select_related('task')
+        for a in week.assignments.select_related('task', 'task__school_class')
     }
     present_members = Enrollment.objects.filter(
         school_class__presences__week=week
@@ -397,7 +483,16 @@ def build_week_dashboard(week):
                 )
             ],
             'task': (
-                {'id': assignment.task.pk, 'name': assignment.task.name}
+                {
+                    'id': assignment.task.pk,
+                    'name': assignment.task.name,
+                    # Set only for a class's own cleaning: lets the sheet
+                    # group those rows apart from the rotating chores.
+                    'school_class': (
+                        assignment.task.school_class.name
+                        if assignment.task.school_class_id else None
+                    ),
+                }
                 if assignment else None
             ),
         })
@@ -415,9 +510,23 @@ def build_week_dashboard(week):
 def build_year_stats(school_year):
     """Per-group fairness matrix for a school year: how often each group
     did each task, plus totals and rest counts."""
-    task_names = dict(
-        Task.objects.filter(school=school_year.school).values_list('pk', 'name')
+    # The school's rotating chores, plus the cleaning tasks of THIS year's
+    # classes. Another year's class tasks belong to the same school but mean
+    # nothing here — they would add a permanently empty column per class.
+    tasks = sorted(
+        Task.objects.filter(school=school_year.school)
+        .filter(
+            Q(school_class__isnull=True)
+            | Q(school_class__school_year=school_year)
+        )
+        .select_related('school_class'),
+        key=lambda task: (
+            task.school_class_id is not None,
+            task.school_class.position or 0 if task.school_class_id else 0,
+            task.pk,
+        ),
     )
+    task_names = {task.pk: task.name for task in tasks}
     # A group is on duty as soon as one member's class is present, and two
     # members can bring the same week in — count distinct (group, week) pairs.
     weeks_present = Counter(
@@ -453,6 +562,18 @@ def build_year_stats(school_year):
         row['weeks_rested'] = row['weeks_present'] - row['total']
     return {
         'school_year': {'id': school_year.pk, 'name': school_year.name},
+        # The columns to render, in order — the client cannot rebuild this
+        # list from /api/tasks/, which hides class tasks and spans years.
+        'tasks': [
+            {
+                'id': task.pk,
+                'name': task.name,
+                'school_class': (
+                    task.school_class.name if task.school_class_id else None
+                ),
+            }
+            for task in tasks
+        ],
         'groups': list(group_rows.values()),
     }
 
@@ -469,18 +590,27 @@ def revoke_class_presence(presence):
     them into `total`, pushing `weeks_rested` negative.
 
     A group that still holds a member from another present class keeps its
-    assignment — it can do the chore short-handed. Manual assignments are not
-    spared when the group does empty out: nobody on site cannot work, whoever
+    assignment — it can do the chore short-handed. The one exception is this
+    class's own cleaning task: the room is empty, so it is not cleaned, and
+    that row goes whatever else the group still has on site.
+    Manual assignments are not spared when the group does empty out: nobody on site cannot work, whoever
     typed the override. Re-checking the box leaves those tasks un-assigned;
     run the rotation again to refill them.
     """
     with transaction.atomic():
         week = presence.week
+        school_class = presence.school_class
         presence.delete()
-        removed, _ = Assignment.objects.filter(week=week).exclude(
+        # The room is not used this week, so it is not cleaned -- even though
+        # the group that had the job usually still has members on site with
+        # another class, which is exactly what the query below spares.
+        cleaning, _ = Assignment.objects.filter(
+            week=week, task__school_class=school_class
+        ).delete()
+        orphans, _ = Assignment.objects.filter(week=week).exclude(
             group__enrollments__school_class__presences__week=week
         ).delete()
-    return removed
+    return cleaning + orphans
 
 
 def build_year_presence_grid(school_year):

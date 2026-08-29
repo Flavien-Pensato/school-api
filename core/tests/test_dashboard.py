@@ -61,8 +61,15 @@ class DashboardAndStatsTests(APITestCase):
             self.assertEqual(len(group['students']), 1)
             self.assertEqual(group['students'][0]['school_class'], '4A')
             self.assertIsNotNone(group['task'])
-        assigned = {g['task']['name'] for g in data['groups']}
-        self.assertEqual(assigned, {'Vaisselle', 'Ménage'})
+        # 4A is on site, so one of its two groups cleans its room and the
+        # other takes a rotating chore.
+        cleaning = [g for g in data['groups'] if g['task']['school_class']]
+        self.assertEqual(len(cleaning), 1)
+        self.assertEqual(cleaning[0]['task']['school_class'], '4A')
+        self.assertEqual(cleaning[0]['task']['name'], 'Ménage 4A')
+        rotating = [g for g in data['groups'] if not g['task']['school_class']]
+        self.assertEqual(len(rotating), 1)
+        self.assertIn(rotating[0]['task']['name'], {'Vaisselle', 'Ménage'})
 
     def test_dashboard_absent_class_excluded(self):
         week_no_presence = self.weeks[5]

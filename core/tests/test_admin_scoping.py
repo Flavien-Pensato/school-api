@@ -175,7 +175,13 @@ class ScopedAdminFieldTests(ScopedAdminTestCase):
         self.assertEqual(weeks, set(self.year_a.weeks.values_list('pk', flat=True)))
         self.assertEqual(
             set(form.fields['task'].queryset.values_list('pk', flat=True)),
-            {self.task_a.pk},
+            # the school's rotating chore plus its classes' cleaning tasks
+            {self.task_a.pk}
+            | set(
+                Task.objects.filter(
+                    school_class__school_year=self.year_a
+                ).values_list('pk', flat=True)
+            ),
         )
 
     def test_post_with_foreign_fk_is_rejected(self):
@@ -260,11 +266,19 @@ class ScopedAdminActionTests(ScopedAdminTestCase):
         self.client.force_login(self.staff_a)
         self.post('admin:core_schoolyear_changelist', [self.year_a],
                   'generate_tasks', {'confirmed': '1', 'names': 'Foyer'})
+        # class cleaning tasks live in the same table; the action only ever
+        # touches the rotating pool.
         self.assertEqual(
-            set(self.school_a.tasks.values_list('name', flat=True)),
+            set(
+                self.school_a.tasks.filter(
+                    school_class__isnull=True
+                ).values_list('name', flat=True)
+            ),
             {'Vaisselle A', 'Foyer'},
         )
-        self.assertEqual(self.school_b.tasks.count(), 1)
+        self.assertEqual(
+            self.school_b.tasks.filter(school_class__isnull=True).count(), 1
+        )
 
     def test_staff_cannot_reach_the_school_changelist(self):
         self.client.force_login(self.staff_a)
@@ -273,4 +287,4 @@ class ScopedAdminActionTests(ScopedAdminTestCase):
             ACTION_CHECKBOX_NAME: [self.school_a.pk],
         })
         self.assertEqual(response.status_code, 403)
-        self.assertEqual(Task.objects.count(), 2)
+        self.assertEqual(Task.objects.filter(school_class__isnull=True).count(), 2)

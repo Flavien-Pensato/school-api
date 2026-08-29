@@ -39,6 +39,9 @@ def _rows(groups):
     A group almost always sits in a single class, so repeating "(3eme A)"
     after every name costs a line per row and buys nothing. Hoist the classes
     into their own column and leave the names bare.
+
+    Class cleaning comes first on the sheet: it is the row a class looks for,
+    and it is the one that changes every week with who is on site.
     """
     rows = []
     for group in groups:
@@ -50,9 +53,11 @@ def _rows(groups):
         rows.append({
             **group,
             'classes': ', '.join(classes),
+            'is_class_task': bool(group['task'].get('school_class')),
             'names': [
                 f"{student['last_name']} {student['first_name']}"
                 for student in group['students']
             ],
         })
+    rows.sort(key=lambda row: not row['is_class_task'])
     return rows

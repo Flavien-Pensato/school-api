@@ -3,7 +3,7 @@ from collections import Counter
 from django.test import TestCase
 from rest_framework.test import APITestCase
 
-from core.models import Assignment
+from core.models import Assignment, Task
 from core.services import generate_week_assignments
 
 from .factories import (
@@ -66,8 +66,9 @@ class RotationServiceTests(TestCase):
         [make_task(self.school, f'T{i}') for i in range(2)]
         self.run_weeks(4)
         total, _ = self.counters()
-        # 8 assignments over 4 groups → exactly 2 each
-        self.assertEqual(sorted(total.values()), [2, 2, 2, 2])
+        # 3 chores a week (2 tasks + cleaning 4A) over 4 groups, 4 weeks
+        # → 12 assignments, exactly 3 each
+        self.assertEqual(sorted(total.values()), [3, 3, 3, 3])
 
     def test_absent_class_never_assigned(self):
         make_group(self.year, 'G-present', classes=[self.cls])
@@ -100,21 +101,22 @@ class RotationServiceTests(TestCase):
         self.assertFalse(Assignment.objects.filter(group=empty).exists())
 
     def test_manual_assignment_survives_regeneration(self):
-        groups = [make_group(self.year, f'G{i}', classes=[self.cls]) for i in range(2)]
+        # 3 groups: one is pinned by hand, one cleans 4A, one is left for the
+        # rotation.
+        groups = [make_group(self.year, f'G{i}', classes=[self.cls]) for i in range(3)]
         tasks = [make_task(self.school, f'T{i}') for i in range(2)]
         week = self.weeks[0]
         make_presence(week, self.cls)
         manual = Assignment.objects.create(
-            week=week, task=tasks[0], group=groups[1], is_manual=True
+            week=week, task=tasks[0], group=groups[2], is_manual=True
         )
         result = generate_week_assignments(week)
         manual.refresh_from_db()  # still exists
         self.assertTrue(manual.is_manual)
-        # the other task went to the other group
-        auto = Assignment.objects.get(is_manual=False)
-        self.assertEqual(auto.task, tasks[1])
-        self.assertEqual(auto.group, groups[0])
-        self.assertEqual(len(result['assignments']), 2)
+        auto = {a.task.name: a.group for a in Assignment.objects.filter(is_manual=False)}
+        self.assertEqual(auto['Ménage 4A'], groups[0])
+        self.assertEqual(auto['T1'], groups[1])
+        self.assertEqual(len(result['assignments']), 3)
 
     def test_fewer_groups_than_tasks(self):
         make_group(self.year, 'G0', classes=[self.cls])
@@ -135,23 +137,30 @@ class RotationServiceTests(TestCase):
         self.assertEqual(Assignment.objects.count(), 0)
 
     def test_inactive_task_skipped(self):
-        make_group(self.year, classes=[self.cls])
+        # two groups: one cleans 4A, the other is free for the rotation --
+        # which must reach for 'Active' and never for the retired task.
+        make_group(self.year, 'G0', classes=[self.cls])
+        make_group(self.year, 'G1', classes=[self.cls])
         make_task(self.school, 'Active')
         make_task(self.school, 'Retired', is_active=False)
         week = self.weeks[0]
         make_presence(week, self.cls)
         generate_week_assignments(week)
         self.assertEqual(
-            Assignment.objects.get().task.name, 'Active'
+            {a.task.name for a in Assignment.objects.all()},
+            {'Ménage 4A', 'Active'},
         )
 
     def test_long_simulation_fairness_invariants(self):
-        # two classes present every week, 5 groups total, 3 tasks
+        # two classes present every week, 5 groups total, 3 rotating tasks
+        # plus the two implicit cleanings -- 5 chores, so nobody rests.
         cls_b = make_class(self.year, '4B')
-        for i in range(3):
-            make_group(self.year, f'A{i}', classes=[self.cls])
-        for i in range(2):
-            make_group(self.year, f'B{i}', classes=[cls_b])
+        a_groups = [
+            make_group(self.year, f'A{i}', classes=[self.cls]) for i in range(3)
+        ]
+        b_groups = [
+            make_group(self.year, f'B{i}', classes=[cls_b]) for i in range(2)
+        ]
         [make_task(self.school, f'T{i}') for i in range(3)]
         for week in self.weeks[:12]:
             make_presence(week, self.cls)
@@ -159,7 +168,24 @@ class RotationServiceTests(TestCase):
             generate_week_assignments(week)
         total, pair = self.counters()
         self.assertLessEqual(max(total.values()) - min(total.values()), 1)
-        self.assertLessEqual(max(pair.values()) - min(pair.values()), 1)
+
+        # Pair fairness only compares what is comparable. A cleaning task is
+        # reachable by one class's groups only, so counting it against every
+        # group would report a 12-0 "unfairness" that means nothing. Rotating
+        # tasks are checked across all groups, each cleaning within its class.
+        groups = a_groups + b_groups
+        rotating = Task.objects.filter(school_class__isnull=True)
+        spread = [
+            pair[(group.pk, task.pk)]
+            for group in groups for task in rotating
+        ]
+        self.assertLessEqual(max(spread) - min(spread), 1)
+        for class_groups, school_class in (
+            (a_groups, self.cls), (b_groups, cls_b)
+        ):
+            task = Task.objects.get(school_class=school_class)
+            counts = [pair[(group.pk, task.pk)] for group in class_groups]
+            self.assertLessEqual(max(counts) - min(counts), 1)
 
 
 class AssignmentAPITests(APITestCase):

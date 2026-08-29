@@ -223,12 +223,30 @@ class EnrollmentViewSet(SchoolScopedViewSetMixin, viewsets.ModelViewSet):
 
 
 class TaskViewSet(SchoolScopedViewSetMixin, viewsets.ModelViewSet):
-    queryset = Task.objects.all()
+    """The school's chores.
+
+    Class cleaning tasks are hidden by default: they are created, renamed and
+    deleted with their class, so a staff list offering to rename or delete
+    them would only be a way to break the rotation. `?school_class=<id>` or
+    `?include_class_tasks=1` opts back in.
+    """
+
+    queryset = Task.objects.select_related('school_class')
     serializer_class = TaskSerializer
     permission_classes = [IsSchoolMember]
 
     def get_queryset(self):
-        return self.filter_by_params(super().get_queryset(), school='school_id')
+        queryset = self.filter_by_params(
+            super().get_queryset(),
+            school='school_id',
+            school_class='school_class_id',
+        )
+        params = self.request.query_params
+        if 'school_class' not in params and not params.get(
+            'include_class_tasks'
+        ):
+            queryset = queryset.filter(school_class__isnull=True)
+        return queryset
 
 
 class ClassPresenceViewSet(SchoolScopedViewSetMixin, viewsets.ModelViewSet):

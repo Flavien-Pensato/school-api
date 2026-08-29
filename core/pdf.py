@@ -17,13 +17,37 @@ def render_week_dashboard_pdf(dashboard):
     """
     from weasyprint import HTML
 
+    context = {**dashboard, 'groups': _rows(dashboard['groups'])}
     document = None
     for font_pt in FONT_SIZES_PT:
         html = render_to_string(
             'core/week_dashboard_pdf.html',
-            {**dashboard, 'font_pt': font_pt},
+            {**context, 'font_pt': font_pt},
         )
         document = HTML(string=html).render()
         if len(document.pages) == 1:
             break
     return document.write_pdf()
+
+
+def _rows(groups):
+    """Print-oriented view of the dashboard groups.
+
+    A group almost always sits in a single class, so repeating "(3eme A)"
+    after every name costs a line per row and buys nothing. Hoist the classes
+    into their own column and leave the names bare.
+    """
+    rows = []
+    for group in groups:
+        classes = list(dict.fromkeys(
+            student['school_class'] for student in group['students']
+        ))
+        rows.append({
+            **group,
+            'classes': ', '.join(classes),
+            'names': [
+                f"{student['last_name']} {student['first_name']}"
+                for student in group['students']
+            ],
+        })
+    return rows

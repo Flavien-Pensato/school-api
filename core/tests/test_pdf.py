@@ -108,13 +108,16 @@ class SinglePagePdfTests(unittest.TestCase):
         from django.template.loader import render_to_string
         from weasyprint import HTML
 
-        from core.pdf import FONT_SIZES_PT
+        from core.pdf import FONT_SIZES_PT, _rows
 
         dashboard = self._dashboard(40)
+        # _rows is what render_week_dashboard_pdf feeds the template; render
+        # the raw dashboard instead and every row comes out empty.
+        context = {**dashboard, 'groups': _rows(dashboard['groups'])}
         for font_pt in FONT_SIZES_PT:
             html = render_to_string(
                 'core/week_dashboard_pdf.html',
-                {**dashboard, 'font_pt': font_pt},
+                {**context, 'font_pt': font_pt},
             )
             if len(HTML(string=html).render().pages) == 1:
                 return

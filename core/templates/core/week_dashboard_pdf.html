@@ -26,8 +26,9 @@
   tr { page-break-inside: avoid; }
   /* table-layout: fixed reads its widths from the first row, so they live on
      the colgroup -- widths on the body cells are ignored. */
-  col.group { width: 7%; }
-  col.students { width: 71%; }
+  col.group { width: 5%; }
+  col.classes { width: 13%; }
+  col.students { width: 60%; }
   col.task { width: 22%; }
   td.task { font-weight: bold; }
   .rest { color: #777; font-style: italic; }
@@ -41,17 +42,18 @@
   {% if groups %}
     <table>
       <colgroup>
-        <col class="group"><col class="students"><col class="task">
+        <col class="group"><col class="classes"><col class="students"><col class="task">
       </colgroup>
       <thead>
-        <tr><th>Groupe</th><th>Élèves</th><th>Tâche</th></tr>
+        <tr><th>Groupe</th><th>Classe</th><th>Élèves</th><th>Tâche</th></tr>
       </thead>
       <tbody>
         {% for group in groups %}
         <tr>
           <td class="group">{{ group.name }}</td>
+          <td class="classes">{{ group.classes|default:"—" }}</td>
           <td>
-            {% for student in group.students %}{{ student.first_name }} {{ student.last_name }} ({{ student.school_class }}){% if not forloop.last %}, {% endif %}{% empty %}—{% endfor %}
+            {% for name in group.names %}{{ name }}{% if not forloop.last %}, {% endif %}{% empty %}—{% endfor %}
           </td>
           {% if group.task %}
             <td class="task">{{ group.task.name }}</td>

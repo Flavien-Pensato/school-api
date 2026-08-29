@@ -1,9 +1,15 @@
 from django.template.loader import render_to_string
 
+# The roster gets posted on a wall, so it has to be one sheet. WeasyPrint has
+# no shrink-to-fit, so render at the largest body size that still paginates to
+# a single page. 5pt is the floor: below that nobody reads it from a corridor,
+# and a second page becomes the lesser evil.
+FONT_SIZES_PT = (10, 9, 8, 7, 6.5, 6, 5.5, 5)
+
 
 def render_week_dashboard_pdf(dashboard):
     """Render the week dashboard dict (from services.build_week_dashboard)
-    to PDF bytes.
+    to PDF bytes, on a single page whenever the content allows it.
 
     weasyprint is imported lazily: it needs system libraries (pango) and
     the rest of the API must keep working without them. On macOS run the
@@ -11,5 +17,13 @@ def render_week_dashboard_pdf(dashboard):
     """
     from weasyprint import HTML
 
-    html = render_to_string('core/week_dashboard_pdf.html', dashboard)
-    return HTML(string=html).write_pdf()
+    document = None
+    for font_pt in FONT_SIZES_PT:
+        html = render_to_string(
+            'core/week_dashboard_pdf.html',
+            {**dashboard, 'font_pt': font_pt},
+        )
+        document = HTML(string=html).render()
+        if len(document.pages) == 1:
+            break
+    return document.write_pdf()
